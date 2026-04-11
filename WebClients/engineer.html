@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>SpacedOut - Engineer</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="paused-overlay hidden" id="paused-overlay">PAUSIERT</div>
+    <div class="mission-end-overlay hidden" id="mission-end">
+        <div class="mission-end-title" id="mission-end-title"></div>
+        <div class="mission-end-detail" id="mission-end-detail"></div>
+    </div>
+
+    <div class="header">
+        <div>
+            <div class="header-title">Engineer</div>
+            <div class="header-status" id="connection-status">Verbinde...</div>
+        </div>
+        <div style="text-align: right;">
+            <div class="header-phase" id="phase-display">---</div>
+            <div class="header-status" id="timer-display">00:00</div>
+        </div>
+    </div>
+
+    <div class="content">
+        <!-- Hull -->
+        <div class="panel">
+            <div class="panel-title">Hüllenintegrität</div>
+            <div class="status-value text-green" id="hull-value" style="text-align:center;">100%</div>
+            <div class="progress-bar progress-green mt-4">
+                <div class="progress-fill" id="hull-bar" style="width:100%"></div>
+            </div>
+        </div>
+
+        <!-- Energy Distribution -->
+        <div class="panel" id="energy-panel">
+            <div class="panel-title">Energieverteilung</div>
+
+            <!-- Quick Presets -->
+            <div class="btn-grid" style="grid-template-columns: repeat(4, 1fr); margin-bottom:12px;">
+                <button class="btn btn-sm" onclick="applyPreset('balanced')">Neutral</button>
+                <button class="btn btn-sm" onclick="applyPreset('drive')">Antrieb</button>
+                <button class="btn btn-sm" onclick="applyPreset('shields')">Schilde</button>
+                <button class="btn btn-sm" onclick="applyPreset('sensors')">Sensorik</button>
+            </div>
+
+            <!-- Drive -->
+            <div class="energy-system" id="energy-sys-drive">
+                <div class="energy-header">
+                    <span class="energy-name">⚡ Antrieb</span>
+                    <span class="energy-value text-cyan" id="energy-drive-value">34</span>
+                </div>
+                <input type="range" id="energy-drive" min="0" max="80" value="34"
+                       oninput="onSliderInput('drive')">
+                <div class="energy-impact" id="impact-drive">
+                    <span class="impact-label">Geschwindigkeit</span>
+                    <span class="impact-bar-track">
+                        <span class="impact-bar-fill" id="impact-drive-fill"></span>
+                    </span>
+                    <span class="impact-value" id="impact-drive-val">100%</span>
+                </div>
+            </div>
+
+            <!-- Shields -->
+            <div class="energy-system" id="energy-sys-shields">
+                <div class="energy-header">
+                    <span class="energy-name">🛡 Schilde</span>
+                    <span class="energy-value text-cyan" id="energy-shields-value">33</span>
+                </div>
+                <input type="range" id="energy-shields" min="0" max="80" value="33"
+                       oninput="onSliderInput('shields')">
+                <div class="energy-impact" id="impact-shields">
+                    <span class="impact-label">Schutz</span>
+                    <span class="impact-bar-track">
+                        <span class="impact-bar-fill" id="impact-shields-fill"></span>
+                    </span>
+                    <span class="impact-value" id="impact-shields-val">100%</span>
+                </div>
+            </div>
+
+            <!-- Sensors -->
+            <div class="energy-system" id="energy-sys-sensors">
+                <div class="energy-header">
+                    <span class="energy-name">📡 Sensorik</span>
+                    <span class="energy-value text-cyan" id="energy-sensors-value">33</span>
+                </div>
+                <input type="range" id="energy-sensors" min="0" max="80" value="33"
+                       oninput="onSliderInput('sensors')">
+                <div class="energy-impact" id="impact-sensors">
+                    <span class="impact-label">Scan-Speed</span>
+                    <span class="impact-bar-track">
+                        <span class="impact-bar-fill" id="impact-sensors-fill"></span>
+                    </span>
+                    <span class="impact-value" id="impact-sensors-val">100%</span>
+                </div>
+            </div>
+
+            <div id="energy-total" class="text-center mt-4" style="font-size:13px;">
+                Gesamt: <span class="text-cyan">100</span> / 100
+            </div>
+
+            <button class="btn btn-primary btn-block mt-8" id="apply-energy-btn" onclick="applyEnergy()">
+                Energieverteilung anwenden
+            </button>
+            <div id="energy-changed-hint" class="text-center text-yellow mt-4 hidden" style="font-size:11px;">
+                Nicht angewendet — tippe "Anwenden"
+            </div>
+        </div>
+
+        <!-- Systems -->
+        <div class="panel">
+            <div class="panel-title">Systemstatus</div>
+            <div id="systems-container"></div>
+        </div>
+
+        <!-- Active Events -->
+        <div class="panel" id="events-panel" style="display:none;">
+            <div class="panel-title">Aktive Ereignisse</div>
+            <div id="events-container"></div>
+        </div>
+
+        <!-- Actions -->
+        <div class="panel">
+            <div class="panel-title">Notfall-Aktionen</div>
+            <div class="btn-grid" style="grid-template-columns: 1fr 1fr 1fr;">
+                <button class="btn btn-danger btn-sm" onclick="emergencyShutdown('Drive')">⚡ Aus</button>
+                <button class="btn btn-danger btn-sm" onclick="emergencyShutdown('Shields')">🛡 Aus</button>
+                <button class="btn btn-danger btn-sm" onclick="emergencyShutdown('Sensors')">📡 Aus</button>
+            </div>
+            <button class="btn btn-warning btn-block mt-8" onclick="raiseWarning()">
+                Warnung an Hauptschirm senden
+            </button>
+        </div>
+    </div>
+
+    <script src="js/client.js"></script>
+    <script src="js/engineer.js"></script>
+</body>
+</html>

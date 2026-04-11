@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>SpacedOut - Brücke</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="connect-screen" id="role-select">
+        <div class="connect-title">SpacedOut</div>
+        <div class="connect-subtitle">Wähle deine Station</div>
+        <div id="connection-status" class="connect-subtitle" style="color: var(--yellow);">Verbinde...</div>
+
+        <div class="role-grid" id="role-grid">
+            <div class="role-card" data-role="Captain" onclick="selectRole('Captain')">
+                <div class="role-icon">⭐</div>
+                <div class="role-name">Kapitän</div>
+                <div class="role-desc">Entscheidungen, Prioritäten, Kommunikation</div>
+            </div>
+            <div class="role-card" data-role="Navigator" onclick="selectRole('Navigator')">
+                <div class="role-icon">🧭</div>
+                <div class="role-name">Navigator</div>
+                <div class="role-desc">Route, Waypoints, Flugmodus</div>
+            </div>
+            <div class="role-card" data-role="Engineer" onclick="selectRole('Engineer')">
+                <div class="role-icon">⚡</div>
+                <div class="role-name">Engineer</div>
+                <div class="role-desc">Energie, Systeme, Reparaturen</div>
+            </div>
+            <div class="role-card" data-role="Tactical" onclick="selectRole('Tactical')">
+                <div class="role-icon">🎯</div>
+                <div class="role-name">Tactical</div>
+                <div class="role-desc">Kontakte, Scans, Bedrohungen</div>
+            </div>
+        </div>
+
+        <div class="connect-subtitle" style="margin-top: 10px;">
+            Warte auf Verbindung zum Host...
+        </div>
+    </div>
+
+    <script src="js/client.js"></script>
+    <script>
+        function selectRole(role) {
+            client.selectRole(role);
+        }
+
+        client.on('welcome', (msg) => {
+            document.getElementById('connection-status').textContent = 'VERBUNDEN';
+            document.getElementById('connection-status').style.color = 'var(--green)';
+            updateAvailableRoles(msg.available_roles);
+        });
+
+        client.on('role_status', (msg) => {
+            updateAvailableRoles(msg.available);
+        });
+
+        client.on('role_assigned', (msg) => {
+            const role = msg.role.toLowerCase();
+            window.location.href = `${role}.html`;
+        });
+
+        function updateAvailableRoles(available) {
+            const cards = document.querySelectorAll('.role-card');
+            cards.forEach(card => {
+                const role = card.dataset.role;
+                if (available.includes(role)) {
+                    card.classList.remove('taken');
+                } else {
+                    card.classList.add('taken');
+                }
+            });
+        }
+
+        client.connect();
+    </script>
+</body>
+</html>

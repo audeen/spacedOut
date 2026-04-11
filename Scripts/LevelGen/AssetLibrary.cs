@@ -1,0 +1,277 @@
+using System.Collections.Generic;
+using System.Linq;
+using Godot;
+
+namespace SpacedOut.LevelGen;
+
+public static class AssetLibrary
+{
+    private static readonly List<AssetDefinition> Assets = new()
+    {
+        // ── Asteroid Field ──────────────────────────────────────────
+        new AssetDefinition
+        {
+            Id = "asteroid_large",
+            DisplayName = "Großer Asteroid",
+            Category = AssetCategory.AsteroidLarge,
+            Tags = new[] { "natural", "solid", "landmark" },
+            Shape = PlaceholderShape.Sphere,
+            Radius = 25f,
+            Weight = 1f,
+            MinSpacing = 55f,
+            AllowedBiomes = new[] { "asteroid_field" },
+            IsLandmark = true,
+            DebugColor = new Color(0.65f, 0.55f, 0.40f),
+            MinScale = 0.8f,
+            MaxScale = 1.4f,
+        },
+        new AssetDefinition
+        {
+            Id = "asteroid_medium",
+            DisplayName = "Mittlerer Asteroid",
+            Category = AssetCategory.AsteroidMedium,
+            Tags = new[] { "natural", "solid" },
+            Shape = PlaceholderShape.Sphere,
+            Radius = 12f,
+            Weight = 3f,
+            MinSpacing = 20f,
+            AllowedBiomes = new[] { "asteroid_field" },
+            Clusterable = true,
+            DebugColor = new Color(0.55f, 0.45f, 0.35f),
+            MinScale = 0.7f,
+            MaxScale = 1.5f,
+        },
+        new AssetDefinition
+        {
+            Id = "asteroid_small",
+            DisplayName = "Kleiner Asteroid",
+            Category = AssetCategory.AsteroidSmall,
+            Tags = new[] { "natural", "scatter" },
+            Shape = PlaceholderShape.Sphere,
+            Radius = 4f,
+            Weight = 5f,
+            MinSpacing = 6f,
+            AllowedBiomes = new[] { "asteroid_field" },
+            Clusterable = true,
+            DebugColor = new Color(0.45f, 0.38f, 0.30f),
+            MinScale = 0.5f,
+            MaxScale = 2.0f,
+        },
+        new AssetDefinition
+        {
+            Id = "resource_node",
+            DisplayName = "Ressourcen-Knoten",
+            Category = AssetCategory.ResourceNode,
+            Tags = new[] { "resource", "poi" },
+            Shape = PlaceholderShape.Sphere,
+            Radius = 3f,
+            Weight = 2f,
+            MinSpacing = 30f,
+            AllowedBiomes = new[] { "asteroid_field" },
+            DebugColor = new Color(0.95f, 0.85f, 0.15f),
+            MinScale = 0.8f,
+            MaxScale = 1.2f,
+        },
+
+        // ── Wreck Zone ──────────────────────────────────────────────
+        new AssetDefinition
+        {
+            Id = "wreck_main",
+            DisplayName = "Hauptwrack",
+            Category = AssetCategory.WreckMain,
+            Tags = new[] { "wreck", "landmark", "structure" },
+            Shape = PlaceholderShape.Box,
+            Radius = 35f,
+            Weight = 1f,
+            MinSpacing = 70f,
+            AllowedBiomes = new[] { "wreck_zone" },
+            IsLandmark = true,
+            DebugColor = new Color(0.50f, 0.25f, 0.20f),
+            MinScale = 0.9f,
+            MaxScale = 1.3f,
+        },
+        new AssetDefinition
+        {
+            Id = "wreck_medium",
+            DisplayName = "Mittleres Wrackteil",
+            Category = AssetCategory.WreckMedium,
+            Tags = new[] { "wreck", "structure" },
+            Shape = PlaceholderShape.Box,
+            Radius = 14f,
+            Weight = 3f,
+            MinSpacing = 22f,
+            AllowedBiomes = new[] { "wreck_zone" },
+            Clusterable = true,
+            DebugColor = new Color(0.45f, 0.40f, 0.38f),
+            MinScale = 0.6f,
+            MaxScale = 1.6f,
+        },
+        new AssetDefinition
+        {
+            Id = "debris_cluster",
+            DisplayName = "Trümmercluster",
+            Category = AssetCategory.DebrisCluster,
+            Tags = new[] { "wreck", "scatter", "debris" },
+            Shape = PlaceholderShape.Box,
+            Radius = 5f,
+            Weight = 5f,
+            MinSpacing = 7f,
+            AllowedBiomes = new[] { "wreck_zone" },
+            Clusterable = true,
+            DebugColor = new Color(0.35f, 0.33f, 0.30f),
+            MinScale = 0.4f,
+            MaxScale = 2.2f,
+        },
+        new AssetDefinition
+        {
+            Id = "beacon",
+            DisplayName = "Signalboje",
+            Category = AssetCategory.Beacon,
+            Tags = new[] { "marker", "signal" },
+            Shape = PlaceholderShape.Capsule,
+            Radius = 2f,
+            Weight = 2f,
+            MinSpacing = 40f,
+            AllowedBiomes = new[] { "wreck_zone" },
+            DebugColor = new Color(0.1f, 0.9f, 0.95f),
+            MinScale = 0.9f,
+            MaxScale = 1.1f,
+        },
+        new AssetDefinition
+        {
+            Id = "loot_marker",
+            DisplayName = "Loot-Marker",
+            Category = AssetCategory.LootMarker,
+            Tags = new[] { "loot", "poi" },
+            Shape = PlaceholderShape.Capsule,
+            Radius = 2.5f,
+            Weight = 2f,
+            MinSpacing = 35f,
+            AllowedBiomes = new[] { "wreck_zone" },
+            DebugColor = new Color(0.95f, 0.70f, 0.10f),
+            MinScale = 0.8f,
+            MaxScale = 1.2f,
+        },
+
+        // ── Station Periphery ───────────────────────────────────────
+        new AssetDefinition
+        {
+            Id = "station_core",
+            DisplayName = "Stationskern",
+            Category = AssetCategory.StationCore,
+            Tags = new[] { "station", "landmark", "structure" },
+            Shape = PlaceholderShape.Cylinder,
+            Radius = 40f,
+            Weight = 1f,
+            MinSpacing = 80f,
+            AllowedBiomes = new[] { "station_periphery" },
+            IsLandmark = true,
+            DebugColor = new Color(0.45f, 0.55f, 0.70f),
+            MinScale = 0.9f,
+            MaxScale = 1.2f,
+        },
+        new AssetDefinition
+        {
+            Id = "station_module",
+            DisplayName = "Stationsmodul",
+            Category = AssetCategory.StationModule,
+            Tags = new[] { "station", "structure", "module" },
+            Shape = PlaceholderShape.Cylinder,
+            Radius = 12f,
+            Weight = 3f,
+            MinSpacing = 18f,
+            AllowedBiomes = new[] { "station_periphery" },
+            Clusterable = true,
+            DebugColor = new Color(0.40f, 0.50f, 0.65f),
+            MinScale = 0.7f,
+            MaxScale = 1.4f,
+        },
+        new AssetDefinition
+        {
+            Id = "cargo_cluster",
+            DisplayName = "Container-Gruppe",
+            Category = AssetCategory.CargoCluster,
+            Tags = new[] { "station", "cargo", "scatter" },
+            Shape = PlaceholderShape.Box,
+            Radius = 6f,
+            Weight = 4f,
+            MinSpacing = 8f,
+            AllowedBiomes = new[] { "station_periphery" },
+            Clusterable = true,
+            DebugColor = new Color(0.50f, 0.45f, 0.35f),
+            MinScale = 0.5f,
+            MaxScale = 1.8f,
+        },
+        new AssetDefinition
+        {
+            Id = "utility_node",
+            DisplayName = "Versorgungsknoten",
+            Category = AssetCategory.UtilityNode,
+            Tags = new[] { "station", "utility", "poi" },
+            Shape = PlaceholderShape.Cylinder,
+            Radius = 4f,
+            Weight = 2f,
+            MinSpacing = 25f,
+            AllowedBiomes = new[] { "station_periphery" },
+            DebugColor = new Color(0.50f, 0.55f, 0.65f),
+            MinScale = 0.8f,
+            MaxScale = 1.3f,
+        },
+
+        // ── Shared / Cross-biome ────────────────────────────────────
+        new AssetDefinition
+        {
+            Id = "poi_marker",
+            DisplayName = "Point of Interest",
+            Category = AssetCategory.PoiMarker,
+            Tags = new[] { "marker", "poi" },
+            Shape = PlaceholderShape.Capsule,
+            Radius = 3f,
+            Weight = 2f,
+            MinSpacing = 40f,
+            AllowedBiomes = new[] { "asteroid_field", "wreck_zone", "station_periphery" },
+            DebugColor = new Color(0.90f, 0.20f, 0.85f),
+            MinScale = 0.9f,
+            MaxScale = 1.1f,
+        },
+        new AssetDefinition
+        {
+            Id = "encounter_marker",
+            DisplayName = "Begegnungssignal",
+            Category = AssetCategory.EncounterMarker,
+            Tags = new[] { "marker", "encounter", "event" },
+            Shape = PlaceholderShape.Capsule,
+            Radius = 3f,
+            Weight = 1f,
+            MinSpacing = 50f,
+            AllowedBiomes = new[] { "asteroid_field", "wreck_zone", "station_periphery" },
+            DebugColor = new Color(0.95f, 0.30f, 0.15f),
+            MinScale = 0.9f,
+            MaxScale = 1.1f,
+        },
+        new AssetDefinition
+        {
+            Id = "exit_marker",
+            DisplayName = "Ausgang / Gate",
+            Category = AssetCategory.ExitMarker,
+            Tags = new[] { "marker", "exit", "navigation" },
+            Shape = PlaceholderShape.Capsule,
+            Radius = 5f,
+            Weight = 1f,
+            MinSpacing = 20f,
+            AllowedBiomes = new[] { "asteroid_field", "wreck_zone", "station_periphery" },
+            DebugColor = new Color(0.15f, 0.95f, 0.30f),
+        },
+    };
+
+    public static AssetDefinition? GetById(string id) =>
+        Assets.FirstOrDefault(a => a.Id == id);
+
+    public static List<AssetDefinition> GetForBiome(string biome) =>
+        Assets.Where(a => a.AllowedBiomes.Contains(biome)).ToList();
+
+    public static List<AssetDefinition> GetLandmarks(string biome) =>
+        Assets.Where(a => a.IsLandmark && a.AllowedBiomes.Contains(biome)).ToList();
+
+    public static List<AssetDefinition> GetAll() => Assets;
+}

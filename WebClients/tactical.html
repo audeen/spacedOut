@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>SpacedOut - Tactical</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="paused-overlay hidden" id="paused-overlay">PAUSIERT</div>
+    <div class="mission-end-overlay hidden" id="mission-end">
+        <div class="mission-end-title" id="mission-end-title"></div>
+        <div class="mission-end-detail" id="mission-end-detail"></div>
+    </div>
+
+    <div class="header">
+        <div>
+            <div class="header-title">Tactical</div>
+            <div class="header-status" id="connection-status">Verbinde...</div>
+        </div>
+        <div style="text-align: right;">
+            <div class="header-phase" id="phase-display">---</div>
+            <div class="header-status" id="timer-display">00:00</div>
+        </div>
+    </div>
+
+    <div class="content">
+        <!-- Sensor Status -->
+        <div class="panel">
+            <div class="panel-title">Sensorstatus</div>
+            <div class="status-row">
+                <span class="status-label">Zustand</span>
+                <span id="sensor-status"></span>
+            </div>
+            <div class="status-row">
+                <span class="status-label">Energie</span>
+                <span class="status-value" id="sensor-energy" style="font-size:18px;">33</span>
+            </div>
+            <div class="status-row">
+                <span class="status-label">Reichweite</span>
+                <span class="status-value text-cyan" id="sensor-range" style="font-size:18px;">500</span>
+            </div>
+        </div>
+
+        <!-- Tactical Map -->
+        <div class="panel">
+            <div class="panel-title">Taktische Ansicht</div>
+            <div class="map-container" style="aspect-ratio: 1.5;">
+                <canvas class="map-canvas" id="tactical-canvas"></canvas>
+            </div>
+        </div>
+
+        <!-- Contact List -->
+        <div class="panel">
+            <div class="panel-title">Kontakte</div>
+            <div id="contacts-container" class="contact-list"></div>
+        </div>
+
+        <!-- Active Events -->
+        <div class="panel" id="events-panel" style="display:none;">
+            <div class="panel-title">Aktive Ereignisse</div>
+            <div id="events-container"></div>
+        </div>
+
+        <!-- Actions for selected contact -->
+        <div class="panel" id="contact-actions" style="display:none;">
+            <div class="panel-title">Kontakt-Aktionen: <span id="selected-contact-name"></span></div>
+            <div class="btn-grid" style="grid-template-columns: 1fr;">
+                <button class="btn btn-primary btn-block" id="scan-btn" onclick="scanSelected()">
+                    Scannen
+                </button>
+                <button class="btn btn-primary btn-block" onclick="markSelected()">
+                    Auf Hauptschirm markieren
+                </button>
+                <div class="slider-group">
+                    <div class="slider-label">
+                        <span>Bedrohungsstufe</span>
+                        <span class="slider-value" id="threat-value">5</span>
+                    </div>
+                    <input type="range" id="threat-slider" min="0" max="10" value="5"
+                           oninput="document.getElementById('threat-value').textContent = this.value">
+                </div>
+                <button class="btn btn-warning btn-block" onclick="setThreatLevel()">
+                    Bedrohungsstufe setzen
+                </button>
+            </div>
+        </div>
+
+        <!-- Main Screen Toggle -->
+        <div class="panel">
+            <div class="panel-title">Hauptschirm</div>
+            <button class="btn btn-block" id="toggle-tactical-btn" onclick="toggleTacticalOnMainScreen()">
+                Taktik auf Hauptschirm
+            </button>
+        </div>
+
+        <!-- Warning -->
+        <div class="panel">
+            <div class="panel-title">Kommunikation</div>
+            <button class="btn btn-warning btn-block" onclick="raiseTacticalWarning()">
+                Taktische Warnung senden
+            </button>
+        </div>
+    </div>
+
+    <script src="js/client.js"></script>
+    <script src="js/tactical.js"></script>
+</body>
+</html>

@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>SpacedOut - Navigator</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="paused-overlay hidden" id="paused-overlay">PAUSIERT</div>
+    <div class="mission-end-overlay hidden" id="mission-end">
+        <div class="mission-end-title" id="mission-end-title"></div>
+        <div class="mission-end-detail" id="mission-end-detail"></div>
+    </div>
+
+    <div class="header">
+        <div>
+            <div class="header-title">Navigator</div>
+            <div class="header-status" id="connection-status">Verbinde...</div>
+        </div>
+        <div style="text-align: right;">
+            <div class="header-phase" id="phase-display">---</div>
+            <div class="header-status" id="timer-display">00:00</div>
+        </div>
+    </div>
+
+    <!-- Sector Map Overlay (shown between missions) -->
+    <div class="sector-map-overlay hidden" id="sector-map-overlay">
+        <div class="sector-map-header">
+            <div>
+                <div class="sector-map-title" id="sector-title">SEKTORKARTE</div>
+                <div class="sector-map-subtitle" id="sector-subtitle">Wähle den nächsten Kurs</div>
+            </div>
+            <div class="sector-map-resources">
+                <span class="resource-item" id="resource-hull">Hull: 100%</span>
+                <span class="resource-item" id="resource-fuel">Fuel: 10</span>
+                <span class="resource-item" id="resource-scrap">Scrap: 0</span>
+            </div>
+        </div>
+        <div class="sector-map-canvas-container">
+            <canvas id="sector-map-canvas"></canvas>
+        </div>
+        <div class="sector-map-node-info hidden" id="node-info-panel">
+            <div class="node-info-title" id="node-info-title"></div>
+            <div class="node-info-desc" id="node-info-desc"></div>
+            <div class="node-info-meta" id="node-info-meta"></div>
+            <button class="btn btn-primary btn-block mt-8" id="node-select-btn" onclick="confirmNodeSelection()">
+                Kurs setzen
+            </button>
+        </div>
+    </div>
+
+    <div class="content">
+        <!-- Map -->
+        <div class="panel" style="padding:6px;">
+            <div class="panel-title" style="padding:0 6px;">Sektorkarte</div>
+            <div class="map-container">
+                <canvas class="map-canvas" id="map-canvas"></canvas>
+                <div class="map-controls">
+                    <button class="btn btn-sm btn-primary" onclick="zoomIn()">+</button>
+                    <button class="btn btn-sm btn-primary" onclick="zoomOut()">−</button>
+                    <button class="btn btn-sm" onclick="centerOnShip()" style="font-size:12px;">⌂</button>
+                </div>
+                <div class="map-info-overlay" id="map-info">Zoom: 1.0x</div>
+            </div>
+            <div class="text-dim mt-4" style="font-size:11px; padding:0 6px;">
+                Tippe = Waypoint setzen · Ziehen = Karte bewegen
+            </div>
+        </div>
+
+        <!-- Flight Status -->
+        <div class="panel">
+            <div class="panel-title">Flugstatus</div>
+            <div class="status-row">
+                <span class="status-label">Position</span>
+                <span class="status-value" id="position-display" style="font-size:16px;">0, 0</span>
+            </div>
+            <div class="status-row">
+                <span class="status-label">Geschwindigkeit</span>
+                <span class="status-value text-cyan" id="speed-display" style="font-size:16px;">0</span>
+            </div>
+            <div class="status-row">
+                <span class="status-label">Antrieb</span>
+                <span id="drive-status"></span>
+            </div>
+            <div class="status-row">
+                <span class="status-label">Energie Antrieb</span>
+                <span class="status-value" id="drive-energy" style="font-size:16px;">34</span>
+            </div>
+            <div class="status-row">
+                <span class="status-label">Dist. nächster WP</span>
+                <span class="status-value text-cyan" id="next-wp-dist" style="font-size:16px;">---</span>
+            </div>
+        </div>
+
+        <!-- Flight Mode -->
+        <div class="panel">
+            <div class="panel-title">Flugmodus</div>
+            <div class="btn-grid btn-grid-2" id="flight-mode-buttons">
+                <button class="btn btn-primary" data-mode="Cruise" onclick="setFlightMode('Cruise')">
+                    Cruise
+                </button>
+                <button class="btn btn-primary" data-mode="Approach" onclick="setFlightMode('Approach')">
+                    Annäherung
+                </button>
+                <button class="btn btn-warning" data-mode="Evasive" onclick="setFlightMode('Evasive')">
+                    Ausweichen
+                </button>
+                <button class="btn" data-mode="Hold" onclick="setFlightMode('Hold')">
+                    Halten
+                </button>
+            </div>
+            <div class="mt-8 text-dim" style="font-size:13px;">
+                Aktuell: <strong id="current-flight-mode" class="text-cyan">CRUISE</strong>
+            </div>
+        </div>
+
+        <!-- Waypoints -->
+        <div class="panel">
+            <div class="panel-title">Waypoints</div>
+            <div id="waypoint-list" class="contact-list"></div>
+            <button class="btn btn-primary btn-block mt-8" onclick="highlightRoute()">
+                Route auf Hauptschirm zeigen
+            </button>
+            <button class="btn btn-block mt-8" id="toggle-starmap-btn" onclick="toggleStarMapOnMainScreen()">
+                Sektorkarte auf Hauptschirm
+            </button>
+        </div>
+
+        <!-- Route Info -->
+        <div class="panel">
+            <div class="panel-title">Route</div>
+            <div class="status-row">
+                <span class="status-label">Geschätzte Zeit</span>
+                <span class="status-value" id="eta-display" style="font-size:16px;">--:--</span>
+            </div>
+            <div class="status-row">
+                <span class="status-label">Risiko</span>
+                <span id="risk-display" class="status-value" style="font-size:16px;">0</span>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/client.js"></script>
+    <script src="js/navigator.js"></script>
+</body>
+</html>

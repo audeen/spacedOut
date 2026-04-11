@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>SpacedOut - Kapitän</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <!-- Briefing Overlay -->
+    <div class="briefing-overlay hidden" id="briefing-overlay">
+        <div class="briefing-card">
+            <h2>Missionsbriefing</h2>
+            <p id="briefing-text"></p>
+            <button class="btn btn-primary btn-block" onclick="dismissBriefing()">Verstanden</button>
+        </div>
+    </div>
+
+    <!-- Paused Overlay -->
+    <div class="paused-overlay hidden" id="paused-overlay">PAUSIERT</div>
+
+    <!-- Mission End Overlay -->
+    <div class="mission-end-overlay hidden" id="mission-end">
+        <div class="mission-end-title" id="mission-end-title"></div>
+        <div class="mission-end-detail" id="mission-end-detail"></div>
+    </div>
+
+    <!-- Main UI -->
+    <div class="header">
+        <div>
+            <div class="header-title">Kapitän</div>
+            <div class="header-status" id="connection-status">Verbinde...</div>
+        </div>
+        <div style="text-align: right;">
+            <div class="header-phase" id="phase-display">---</div>
+            <div class="header-status" id="timer-display">00:00</div>
+        </div>
+    </div>
+
+    <div class="content">
+        <!-- Pending Decisions (moved to top for urgency) -->
+        <div class="panel" id="decisions-panel" style="display:none;">
+            <div class="panel-title">⚠ Ausstehende Entscheidungen</div>
+            <div id="decisions-container" class="decision-list"></div>
+        </div>
+
+        <!-- Status Overview -->
+        <div class="panel">
+            <div class="panel-title">Schiffsstatus</div>
+            <div class="status-row">
+                <span class="status-label">Hülle</span>
+                <span class="status-value text-green" id="hull-value">100%</span>
+            </div>
+            <div class="progress-bar progress-green" style="margin-top:4px;">
+                <div class="progress-fill" id="hull-bar" style="width:100%"></div>
+            </div>
+            <div class="status-row mt-8">
+                <span class="status-label">Flugmodus</span>
+                <span class="status-value" id="flight-mode" style="font-size:18px;">CRUISE</span>
+            </div>
+            <div class="status-row">
+                <span class="status-label">Systeme</span>
+                <span id="systems-summary" style="font-size:12px;"></span>
+            </div>
+        </div>
+
+        <!-- Active Events with countdown -->
+        <div class="panel" id="events-panel" style="display:none;">
+            <div class="panel-title">Aktive Ereignisse</div>
+            <div id="events-container"></div>
+        </div>
+
+        <!-- Overlay Requests -->
+        <div class="panel" id="overlays-panel" style="display:none;">
+            <div class="panel-title">Crew-Anfragen</div>
+            <div id="overlays-container" class="overlay-list"></div>
+        </div>
+
+        <!-- Actions -->
+        <div class="panel">
+            <div class="panel-title">Aktionen</div>
+            <div class="btn-grid btn-grid-2">
+                <button class="btn btn-primary" onclick="requestStatus('navigation')">Status: Navigation</button>
+                <button class="btn btn-primary" onclick="requestStatus('engineering')">Status: Systeme</button>
+                <button class="btn btn-primary" onclick="requestStatus('tactical')">Status: Taktik</button>
+                <button class="btn btn-warning" onclick="requestStatus('all')">Lagebericht</button>
+            </div>
+        </div>
+
+        <!-- Mission Log with filters -->
+        <div class="panel">
+            <div class="panel-title">Missionslog</div>
+            <div class="log-filters" id="log-filters">
+                <button class="log-filter-btn active" data-filter="all" onclick="setLogFilter('all')">Alle</button>
+                <button class="log-filter-btn" data-filter="System" onclick="setLogFilter('System')">System</button>
+                <button class="log-filter-btn" data-filter="Captain" onclick="setLogFilter('Captain')">Captain</button>
+                <button class="log-filter-btn" data-filter="Navigator" onclick="setLogFilter('Navigator')">Nav</button>
+                <button class="log-filter-btn" data-filter="Engineer" onclick="setLogFilter('Engineer')">Eng</button>
+                <button class="log-filter-btn" data-filter="Tactical" onclick="setLogFilter('Tactical')">Tac</button>
+                <button class="log-filter-btn" data-filter="Navigation" onclick="setLogFilter('Navigation')">Route</button>
+            </div>
+            <div class="log-container" id="log-container"></div>
+        </div>
+    </div>
+
+    <script src="js/client.js"></script>
+    <script src="js/captain.js"></script>
+</body>
+</html>
