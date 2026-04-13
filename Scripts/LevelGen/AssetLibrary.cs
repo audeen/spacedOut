@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using Godot;
+using SpacedOut.Sector;
 
 namespace SpacedOut.LevelGen;
 
@@ -24,6 +25,7 @@ public static class AssetLibrary
             DebugColor = new Color(0.65f, 0.55f, 0.40f),
             MinScale = 0.8f,
             MaxScale = 1.4f,
+            DefaultMapPresence = MapPresence.Point,
         },
         new AssetDefinition
         {
@@ -40,6 +42,7 @@ public static class AssetLibrary
             DebugColor = new Color(0.55f, 0.45f, 0.35f),
             MinScale = 0.7f,
             MaxScale = 1.5f,
+            DefaultMapPresence = MapPresence.NearfieldOnly,
         },
         new AssetDefinition
         {
@@ -56,6 +59,7 @@ public static class AssetLibrary
             DebugColor = new Color(0.45f, 0.38f, 0.30f),
             MinScale = 0.5f,
             MaxScale = 2.0f,
+            DefaultMapPresence = MapPresence.NearfieldOnly,
         },
         new AssetDefinition
         {
@@ -71,6 +75,8 @@ public static class AssetLibrary
             DebugColor = new Color(0.95f, 0.85f, 0.15f),
             MinScale = 0.8f,
             MaxScale = 1.2f,
+            DefaultMapPresence = MapPresence.Point,
+            MarkerVisual = MarkerVisualType.Glow,
         },
 
         // ── Wreck Zone ──────────────────────────────────────────────
@@ -89,6 +95,7 @@ public static class AssetLibrary
             DebugColor = new Color(0.50f, 0.25f, 0.20f),
             MinScale = 0.9f,
             MaxScale = 1.3f,
+            DefaultMapPresence = MapPresence.Point,
         },
         new AssetDefinition
         {
@@ -105,6 +112,7 @@ public static class AssetLibrary
             DebugColor = new Color(0.45f, 0.40f, 0.38f),
             MinScale = 0.6f,
             MaxScale = 1.6f,
+            DefaultMapPresence = MapPresence.NearfieldOnly,
         },
         new AssetDefinition
         {
@@ -121,6 +129,7 @@ public static class AssetLibrary
             DebugColor = new Color(0.35f, 0.33f, 0.30f),
             MinScale = 0.4f,
             MaxScale = 2.2f,
+            DefaultMapPresence = MapPresence.NearfieldOnly,
         },
         new AssetDefinition
         {
@@ -136,6 +145,8 @@ public static class AssetLibrary
             DebugColor = new Color(0.1f, 0.9f, 0.95f),
             MinScale = 0.9f,
             MaxScale = 1.1f,
+            DefaultMapPresence = MapPresence.Point,
+            MarkerVisual = MarkerVisualType.Glow,
         },
         new AssetDefinition
         {
@@ -151,6 +162,8 @@ public static class AssetLibrary
             DebugColor = new Color(0.95f, 0.70f, 0.10f),
             MinScale = 0.8f,
             MaxScale = 1.2f,
+            DefaultMapPresence = MapPresence.Point,
+            MarkerVisual = MarkerVisualType.Glow,
         },
 
         // ── Station Periphery ───────────────────────────────────────
@@ -169,6 +182,7 @@ public static class AssetLibrary
             DebugColor = new Color(0.45f, 0.55f, 0.70f),
             MinScale = 0.9f,
             MaxScale = 1.2f,
+            DefaultMapPresence = MapPresence.Point,
         },
         new AssetDefinition
         {
@@ -185,6 +199,7 @@ public static class AssetLibrary
             DebugColor = new Color(0.40f, 0.50f, 0.65f),
             MinScale = 0.7f,
             MaxScale = 1.4f,
+            DefaultMapPresence = MapPresence.NearfieldOnly,
         },
         new AssetDefinition
         {
@@ -201,6 +216,7 @@ public static class AssetLibrary
             DebugColor = new Color(0.50f, 0.45f, 0.35f),
             MinScale = 0.5f,
             MaxScale = 1.8f,
+            DefaultMapPresence = MapPresence.NearfieldOnly,
         },
         new AssetDefinition
         {
@@ -216,6 +232,8 @@ public static class AssetLibrary
             DebugColor = new Color(0.50f, 0.55f, 0.65f),
             MinScale = 0.8f,
             MaxScale = 1.3f,
+            DefaultMapPresence = MapPresence.Point,
+            MarkerVisual = MarkerVisualType.Glow,
         },
 
         // ── Shared / Cross-biome ────────────────────────────────────
@@ -233,6 +251,8 @@ public static class AssetLibrary
             DebugColor = new Color(0.90f, 0.20f, 0.85f),
             MinScale = 0.9f,
             MaxScale = 1.1f,
+            DefaultMapPresence = MapPresence.Point,
+            MarkerVisual = MarkerVisualType.Glow,
         },
         new AssetDefinition
         {
@@ -248,6 +268,8 @@ public static class AssetLibrary
             DebugColor = new Color(0.95f, 0.30f, 0.15f),
             MinScale = 0.9f,
             MaxScale = 1.1f,
+            DefaultMapPresence = MapPresence.Point,
+            MarkerVisual = MarkerVisualType.Billboard,
         },
         new AssetDefinition
         {
@@ -261,6 +283,8 @@ public static class AssetLibrary
             MinSpacing = 20f,
             AllowedBiomes = new[] { "asteroid_field", "wreck_zone", "station_periphery" },
             DebugColor = new Color(0.15f, 0.95f, 0.30f),
+            DefaultMapPresence = MapPresence.Point,
+            MarkerVisual = MarkerVisualType.Glow,
         },
     };
 

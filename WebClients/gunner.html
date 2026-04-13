@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>SpacedOut - Gunner</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="paused-overlay hidden" id="paused-overlay">PAUSIERT</div>
+    <div class="mission-end-overlay hidden" id="mission-end">
+        <div class="mission-end-title" id="mission-end-title"></div>
+        <div class="mission-end-detail" id="mission-end-detail"></div>
+    </div>
+
+    <div class="header">
+        <div>
+            <div class="header-title">Gunner</div>
+            <div class="header-status" id="connection-status">Verbinde...</div>
+        </div>
+        <div style="text-align: right;">
+            <div class="header-phase" id="phase-display">---</div>
+            <div class="header-status" id="timer-display">00:00</div>
+        </div>
+    </div>
+
+    <div class="content">
+        <!-- Weapon Status -->
+        <div class="panel">
+            <div class="panel-title" style="display:flex; justify-content:space-between; align-items:center;">
+                <span>Waffensysteme</span>
+                <span class="system-status" id="weapon-status">OK</span>
+            </div>
+            <div class="status-row">
+                <span class="status-label">Waffen-Energie</span>
+                <span class="status-value text-cyan" id="weapon-energy" style="font-size:16px;">25</span>
+            </div>
+            <div class="status-row">
+                <span class="status-label">Einsatzregel</span>
+                <span class="status-value" id="engagement-display" style="font-size:14px;">STANDARD</span>
+            </div>
+        </div>
+
+        <!-- Weapon Mode -->
+        <div class="panel">
+            <div class="panel-title">Waffenmodus</div>
+            <div class="btn-grid btn-grid-2" id="weapon-mode-buttons">
+                <button class="btn btn-primary" data-mode="Precision" onclick="setWeaponMode('Precision')">
+                    Präzision
+                    <div class="text-dim" style="font-size:10px;">Sehr langsam, hoher Schaden, weniger Hitze</div>
+                </button>
+                <button class="btn" data-mode="Barrage" onclick="setWeaponMode('Barrage')">
+                    Sperrfeuer
+                    <div class="text-dim" style="font-size:10px;">Schnelle Salven, hohe Hitze</div>
+                </button>
+            </div>
+        </div>
+
+        <!-- Selected Target -->
+        <div class="panel" id="target-panel" style="border-left: 3px solid var(--red);">
+            <div class="panel-title">Ziel</div>
+            <div id="target-info" style="font-size:14px;">
+                <div class="text-dim" style="text-align:center;">Kein Ziel ausgewählt</div>
+            </div>
+            <div id="lock-progress-container" style="display:none; margin-top:8px;">
+                <div class="status-row" style="padding:2px 0;">
+                    <span class="status-label">Zielerfassung</span>
+                    <span class="text-cyan" id="lock-progress-value" style="font-family:var(--font-mono);">0%</span>
+                </div>
+                <div class="progress-bar progress-cyan" style="height:6px;">
+                    <div class="progress-fill" id="lock-progress-bar" style="width:0%"></div>
+                </div>
+            </div>
+            <button class="btn btn-danger btn-block mt-8" id="fire-btn" onclick="fire()" disabled>
+                ▶ FEUER
+            </button>
+            <button class="btn btn-block mt-4" id="cease-fire-btn" onclick="ceaseFire()" style="display:none;">
+                Feuer einstellen
+            </button>
+        </div>
+
+        <!-- Weapon Heat -->
+        <div class="panel">
+            <div class="panel-title">Waffen-Hitze</div>
+            <div class="status-row" style="padding:2px 0;">
+                <span class="status-label">Hitze</span>
+                <span id="heat-value" class="text-green" style="font-family:var(--font-mono); font-size:14px; font-weight:700;">0°</span>
+            </div>
+            <div id="heat-bar-container" class="progress-bar progress-green" style="height:6px;">
+                <div class="progress-fill" id="heat-bar" style="width:0%"></div>
+            </div>
+            <div style="display:flex; justify-content:space-between; font-size:9px; color:var(--dim); margin-top:2px;">
+                <span>0</span><span style="color:var(--yellow);">50</span><span style="color:var(--orange);">70</span><span style="color:var(--red);">95</span><span>100</span>
+            </div>
+            <div id="heat-warning" style="display:none; font-size:12px; font-weight:700; text-align:center; margin-top:6px;"></div>
+            <div class="text-dim" style="text-align:center; font-size:11px; margin-top:4px;">
+                Bei 95° wird Feuern gesperrt. Hitze sinkt passiv, Engineer kann kühlen.
+            </div>
+        </div>
+
+        <!-- Target List -->
+        <div class="panel">
+            <div class="panel-title">Zielliste</div>
+            <div id="target-list" class="contact-list">
+                <div class="text-dim" style="text-align:center; padding:8px; font-size:13px;">Keine gescannten Kontakte</div>
+            </div>
+        </div>
+
+        <!-- Defensive Mode -->
+        <div class="panel">
+            <div class="panel-title">Defensivfeuer</div>
+            <button class="btn btn-block" id="defensive-btn" onclick="toggleDefensiveMode()">
+                Defensivfeuer: AUS
+            </button>
+            <div class="text-dim mt-4" style="font-size:11px;">
+                Automatisches Feuer auf nahe feindliche Kontakte (Bedrohung ≥ 7). Geringerer Schaden, erzeugt Hitze.
+            </div>
+        </div>
+    </div>
+
+    <script src="js/client.js"></script>
+    <script src="js/gunner.js"></script>
+</body>
+</html>

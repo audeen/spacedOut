@@ -3,16 +3,17 @@
  * Auto-balancing energy sliders, impact preview, heat monitoring
  */
 
-let localEnergy = { drive: 34, shields: 33, sensors: 33 };
-let serverEnergy = { drive: 34, shields: 33, sensors: 33 };
+let localEnergy = { drive: 25, shields: 25, sensors: 25, weapons: 25 };
+let serverEnergy = { drive: 25, shields: 25, sensors: 25, weapons: 25 };
 let isAdjusting = false;
 let hasUnappliedChanges = false;
 
 const PRESETS = {
-    balanced: { drive: 34, shields: 33, sensors: 33 },
-    drive:    { drive: 60, shields: 20, sensors: 20 },
-    shields:  { drive: 20, shields: 60, sensors: 20 },
-    sensors:  { drive: 20, shields: 20, sensors: 60 },
+    balanced: { drive: 25, shields: 25, sensors: 25, weapons: 25 },
+    drive:    { drive: 50, shields: 17, sensors: 17, weapons: 16 },
+    shields:  { drive: 17, shields: 50, sensors: 17, weapons: 16 },
+    sensors:  { drive: 17, shields: 17, sensors: 50, weapons: 16 },
+    weapons:  { drive: 17, shields: 16, sensors: 17, weapons: 50 },
 };
 
 client.on('welcome', () => {
@@ -30,7 +31,7 @@ client.onState((msg) => {
     if (!msg.data) return;
     const d = msg.data;
 
-    document.getElementById('phase-display').textContent = msg.mission_phase || '---';
+    updatePhaseHeaderFromState(msg);
     document.getElementById('timer-display').textContent = formatTime(msg.elapsed_time || 0);
 
     const hull = d.hull_integrity ?? 100;
@@ -43,9 +44,10 @@ client.onState((msg) => {
 
     if (d.energy) {
         serverEnergy = {
-            drive: d.energy.Drive ?? 34,
-            shields: d.energy.Shields ?? 33,
-            sensors: d.energy.Sensors ?? 33
+            drive: d.energy.Drive ?? 25,
+            shields: d.energy.Shields ?? 25,
+            sensors: d.energy.Sensors ?? 25,
+            weapons: d.energy.Weapons ?? 25
         };
         if (!isAdjusting) {
             localEnergy = { ...serverEnergy };
@@ -56,6 +58,10 @@ client.onState((msg) => {
 
     renderSystems(d.systems || {});
     renderEvents(d.active_events || []);
+    updateCoolantButtons(d.systems || {});
+
+    const sparesEl = document.getElementById('spare-parts-display');
+    if (sparesEl) sparesEl.textContent = d.spare_parts ?? 0;
 });
 
 client.on('paused', () => document.getElementById('paused-overlay').classList.remove('hidden'));
@@ -70,7 +76,7 @@ client.on('mission_ended', (msg) => {
 
 function onSliderInput(changed) {
     isAdjusting = true;
-    const keys = ['drive', 'shields', 'sensors'];
+    const keys = ['drive', 'shields', 'sensors', 'weapons'];
     const others = keys.filter(k => k !== changed);
 
     const newVal = parseInt(document.getElementById(`energy-${changed}`).value);
@@ -79,7 +85,6 @@ function onSliderInput(changed) {
 
     localEnergy[changed] = newVal;
 
-    // Distribute the delta across other two sliders proportionally
     const otherTotal = others.reduce((s, k) => s + localEnergy[k], 0);
     if (otherTotal > 0 && delta !== 0) {
         let remaining = -delta;
@@ -95,13 +100,14 @@ function onSliderInput(changed) {
             }
         }
     } else if (otherTotal === 0 && delta > 0) {
-        const each = Math.floor(-delta / 2);
-        localEnergy[others[0]] = Math.max(0, localEnergy[others[0]] + each);
-        localEnergy[others[1]] = Math.max(0, localEnergy[others[1]] + (-delta - each));
+        const each = Math.floor(-delta / others.length);
+        let leftover = -delta - each * others.length;
+        others.forEach((k, i) => {
+            localEnergy[k] = Math.max(0, localEnergy[k] + each + (i < leftover ? -1 : 0));
+        });
     }
 
-    // Clamp and fix total
-    let total = localEnergy.drive + localEnergy.shields + localEnergy.sensors;
+    let total = keys.reduce((s, k) => s + localEnergy[k], 0);
     if (total !== 100) {
         const diff = 100 - total;
         for (const k of others) {
@@ -121,7 +127,7 @@ function onSliderInput(changed) {
 }
 
 function updateSliders() {
-    const keys = ['drive', 'shields', 'sensors'];
+    const keys = ['drive', 'shields', 'sensors', 'weapons'];
     keys.forEach(k => {
         document.getElementById(`energy-${k}`).value = localEnergy[k];
         const valEl = document.getElementById(`energy-${k}-value`);
@@ -137,7 +143,7 @@ function updateSliders() {
         }
     });
 
-    const total = localEnergy.drive + localEnergy.shields + localEnergy.sensors;
+    const total = localEnergy.drive + localEnergy.shields + localEnergy.sensors + localEnergy.weapons;
     const totalEl = document.getElementById('energy-total');
     const isValid = total === 100;
     totalEl.innerHTML = `Gesamt: <span class="${isValid ? 'text-cyan' : 'text-red'}">${total}</span> / 100`;
@@ -150,11 +156,12 @@ function updateSliders() {
 }
 
 function updateImpactPreview() {
-    const baseRef = 33;
+    const baseRef = 25;
     const systems = [
         { key: 'drive', label: 'Geschwindigkeit' },
         { key: 'shields', label: 'Schutz' },
         { key: 'sensors', label: 'Scan-Speed' },
+        { key: 'weapons', label: 'Feuerkraft' },
     ];
 
     systems.forEach(sys => {
@@ -194,7 +201,7 @@ function applyPreset(name) {
 }
 
 function applyEnergy() {
-    const total = localEnergy.drive + localEnergy.shields + localEnergy.sensors;
+    const total = localEnergy.drive + localEnergy.shields + localEnergy.sensors + localEnergy.weapons;
     if (total !== 100) {
         client.showToast('Energie muss genau 100 ergeben!', 'danger');
         return;
@@ -203,7 +210,8 @@ function applyEnergy() {
     client.sendCommand('SetEnergyDistribution', {
         drive: localEnergy.drive,
         shields: localEnergy.shields,
-        sensors: localEnergy.sensors
+        sensors: localEnergy.sensors,
+        weapons: localEnergy.weapons
     });
     isAdjusting = false;
     hasUnappliedChanges = false;
@@ -217,11 +225,11 @@ let _lastSystemsKey = '';
 
 function renderSystems(systems) {
     const container = document.getElementById('systems-container');
-    const systemNames = { Drive: 'Antrieb', Shields: 'Schilde', Sensors: 'Sensorik' };
-    const systemIcons = { Drive: '⚡', Shields: '🛡', Sensors: '📡' };
+    const systemNames = { Drive: 'Antrieb', Shields: 'Schilde', Sensors: 'Sensorik', Weapons: 'Waffen' };
+    const systemIcons = { Drive: '⚡', Shields: '🛡', Sensors: '📡', Weapons: '🔫' };
 
     const key = Object.entries(systems).map(([k, s]) =>
-        `${k}:${s.Status}:${Math.round(s.Heat ?? 0)}:${s.IsRepairing}:${Math.round(s.RepairProgress ?? 0)}`
+        `${k}:${s.Status}:${Math.round(s.Heat ?? 0)}:${s.IsRepairing}:${Math.round(s.RepairProgress ?? 0)}:${Math.round(s.CoolantCooldown ?? 0)}`
     ).join('|');
     if (key === _lastSystemsKey) return;
     _lastSystemsKey = key;
@@ -335,6 +343,39 @@ function raiseWarning() {
         client.sendCommand('RaiseSystemWarning', { message: message.trim() });
         client.showToast('Warnung gesendet', 'warning');
     }
+}
+
+function updateCoolantButtons(systems) {
+    const sysKeys = ['Drive', 'Shields', 'Sensors', 'Weapons'];
+    sysKeys.forEach(k => {
+        const btn = document.getElementById(`coolant-btn-${k}`);
+        if (!btn) return;
+        const sys = systems[k];
+        const cd = sys?.CoolantCooldown ?? 0;
+        if (cd > 0) {
+            btn.disabled = true;
+            btn.textContent = `${Math.ceil(cd)}s`;
+        } else {
+            btn.disabled = false;
+            const icons = { Drive: '⚡', Shields: '🛡', Sensors: '📡', Weapons: '🔫' };
+            btn.textContent = `${icons[k]} Kühlen`;
+        }
+    });
+}
+
+function coolantPulse(system) {
+    client.sendCommand('CoolantPulse', { system });
+    client.showToast(`Kühlpuls: ${system}`, 'info');
+}
+
+function overchargeSystem(system) {
+    client.sendCommand('OverchargeSystem', { system });
+    client.showToast(`Overcharge: ${system}`, 'warning');
+}
+
+function convertSparesToAmmo() {
+    client.sendCommand('ConvertSparesToAmmo', {});
+    client.showToast('Ersatzteile zu Munition konvertiert', 'info');
 }
 
 client.connect();

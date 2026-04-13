@@ -42,18 +42,16 @@
             </div>
         </div>
 
-        <!-- Tactical Map -->
+        <!-- Sensor Mode -->
         <div class="panel">
-            <div class="panel-title">Taktische Ansicht</div>
-            <div class="map-container" style="aspect-ratio: 1.5;">
-                <canvas class="map-canvas" id="tactical-canvas"></canvas>
+            <div class="panel-title">Sensormodus</div>
+            <div class="btn-grid btn-grid-2" id="sensor-mode-buttons">
+                <button class="btn btn-primary" id="sensor-passive-btn" onclick="setSensorMode('passive')">Passiv</button>
+                <button class="btn btn-danger" id="sensor-active-btn" onclick="setSensorMode('active')">Aktiv (+50%)</button>
             </div>
-        </div>
-
-        <!-- Contact List -->
-        <div class="panel">
-            <div class="panel-title">Kontakte</div>
-            <div id="contacts-container" class="contact-list"></div>
+            <div class="text-dim mt-4" style="font-size:11px;">
+                Aktiv: +50% Reichweite & Scan-Speed, aber Feinde erkennen unsere Position.
+            </div>
         </div>
 
         <!-- Active Events -->
@@ -62,15 +60,24 @@
             <div id="events-container"></div>
         </div>
 
-        <!-- Actions for selected contact -->
+        <!-- Actions for selected contact (ABOVE map) -->
         <div class="panel" id="contact-actions" style="display:none;">
             <div class="panel-title">Kontakt-Aktionen: <span id="selected-contact-name"></span></div>
             <div class="btn-grid" style="grid-template-columns: 1fr;">
                 <button class="btn btn-primary btn-block" id="scan-btn" onclick="scanSelected()">
                     Scannen
                 </button>
+                <button class="btn btn-block" id="release-nav-btn" onclick="releaseToNavigator()" style="display:none;">
+                    Für Kommandant freigeben
+                </button>
                 <button class="btn btn-primary btn-block" onclick="markSelected()">
                     Auf Hauptschirm markieren
+                </button>
+                <button class="btn btn-danger btn-block" id="designate-btn" onclick="designateTarget()" style="display:none;">
+                    Ziel designieren (+25% DMG)
+                </button>
+                <button class="btn btn-warning btn-block" id="analyze-btn" onclick="analyzeWeakness()" style="display:none;">
+                    Schwachstelle analysieren (+50% DMG)
                 </button>
                 <div class="slider-group">
                     <div class="slider-label">
@@ -84,6 +91,49 @@
                     Bedrohungsstufe setzen
                 </button>
             </div>
+        </div>
+
+        <!-- Tactical Map -->
+        <div class="panel" style="padding:6px;">
+            <div class="panel-title" style="padding:0 6px;">Taktische Ansicht</div>
+            <div class="map-container">
+                <canvas class="map-canvas" id="tactical-canvas"></canvas>
+                <div class="map-controls">
+                    <button class="btn btn-sm btn-primary" onclick="zoomIn()">+</button>
+                    <button class="btn btn-sm btn-primary" onclick="zoomOut()">−</button>
+                    <button class="btn btn-sm" onclick="centerOnShip()" style="font-size:12px;">⌂</button>
+                </div>
+                <div class="map-info-overlay" id="map-info">Zoom: 1.0x</div>
+            </div>
+            <div class="text-dim mt-4" style="font-size:11px; padding:0 6px;">
+                Tippen = Kontakt wählen · Ziehen = Karte bewegen · Sonden-Modus: Tippen = Sonde senden
+            </div>
+        </div>
+
+        <!-- Probes (BELOW map) -->
+        <div class="panel">
+            <div class="panel-title">Sonden</div>
+            <div class="status-row">
+                <span class="status-label">Ladungen</span>
+                <span class="status-value text-green" id="probe-charges" style="font-size:18px;">3 / 5</span>
+            </div>
+            <div class="status-row">
+                <span class="status-label">Nachladen</span>
+                <span class="status-value" id="probe-recharge" style="font-size:14px;">VOLL</span>
+            </div>
+            <button class="btn btn-primary btn-block mt-4" id="probe-mode-btn" onclick="toggleProbeMode()">
+                Sonde senden
+            </button>
+            <div class="text-dim mt-4" style="font-size:11px;">
+                Aktiviere Sonden-Modus und tippe auf die Karte um Bereiche aufzudecken.
+                Aufgedeckte Kontakte erscheinen als Snapshot (25s).
+            </div>
+        </div>
+
+        <!-- Contact List -->
+        <div class="panel">
+            <div class="panel-title">Kontakte</div>
+            <div id="contacts-container" class="contact-list"></div>
         </div>
 
         <!-- Main Screen Toggle -->

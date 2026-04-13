@@ -39,20 +39,21 @@
             <div class="panel-title">Energieverteilung</div>
 
             <!-- Quick Presets -->
-            <div class="btn-grid" style="grid-template-columns: repeat(4, 1fr); margin-bottom:12px;">
+            <div class="btn-grid" style="grid-template-columns: repeat(5, 1fr); margin-bottom:12px;">
                 <button class="btn btn-sm" onclick="applyPreset('balanced')">Neutral</button>
                 <button class="btn btn-sm" onclick="applyPreset('drive')">Antrieb</button>
                 <button class="btn btn-sm" onclick="applyPreset('shields')">Schilde</button>
                 <button class="btn btn-sm" onclick="applyPreset('sensors')">Sensorik</button>
+                <button class="btn btn-sm" onclick="applyPreset('weapons')">Waffen</button>
             </div>
 
             <!-- Drive -->
             <div class="energy-system" id="energy-sys-drive">
                 <div class="energy-header">
                     <span class="energy-name">⚡ Antrieb</span>
-                    <span class="energy-value text-cyan" id="energy-drive-value">34</span>
+                    <span class="energy-value text-cyan" id="energy-drive-value">25</span>
                 </div>
-                <input type="range" id="energy-drive" min="0" max="80" value="34"
+                <input type="range" id="energy-drive" min="0" max="80" value="25"
                        oninput="onSliderInput('drive')">
                 <div class="energy-impact" id="impact-drive">
                     <span class="impact-label">Geschwindigkeit</span>
@@ -67,9 +68,9 @@
             <div class="energy-system" id="energy-sys-shields">
                 <div class="energy-header">
                     <span class="energy-name">🛡 Schilde</span>
-                    <span class="energy-value text-cyan" id="energy-shields-value">33</span>
+                    <span class="energy-value text-cyan" id="energy-shields-value">25</span>
                 </div>
-                <input type="range" id="energy-shields" min="0" max="80" value="33"
+                <input type="range" id="energy-shields" min="0" max="80" value="25"
                        oninput="onSliderInput('shields')">
                 <div class="energy-impact" id="impact-shields">
                     <span class="impact-label">Schutz</span>
@@ -84,9 +85,9 @@
             <div class="energy-system" id="energy-sys-sensors">
                 <div class="energy-header">
                     <span class="energy-name">📡 Sensorik</span>
-                    <span class="energy-value text-cyan" id="energy-sensors-value">33</span>
+                    <span class="energy-value text-cyan" id="energy-sensors-value">25</span>
                 </div>
-                <input type="range" id="energy-sensors" min="0" max="80" value="33"
+                <input type="range" id="energy-sensors" min="0" max="80" value="25"
                        oninput="onSliderInput('sensors')">
                 <div class="energy-impact" id="impact-sensors">
                     <span class="impact-label">Scan-Speed</span>
@@ -94,6 +95,23 @@
                         <span class="impact-bar-fill" id="impact-sensors-fill"></span>
                     </span>
                     <span class="impact-value" id="impact-sensors-val">100%</span>
+                </div>
+            </div>
+
+            <!-- Weapons -->
+            <div class="energy-system" id="energy-sys-weapons">
+                <div class="energy-header">
+                    <span class="energy-name">🔫 Waffen</span>
+                    <span class="energy-value text-cyan" id="energy-weapons-value">25</span>
+                </div>
+                <input type="range" id="energy-weapons" min="0" max="80" value="25"
+                       oninput="onSliderInput('weapons')">
+                <div class="energy-impact" id="impact-weapons">
+                    <span class="impact-label">Feuerkraft</span>
+                    <span class="impact-bar-track">
+                        <span class="impact-bar-fill" id="impact-weapons-fill"></span>
+                    </span>
+                    <span class="impact-value" id="impact-weapons-val">100%</span>
                 </div>
             </div>
 
@@ -121,13 +139,35 @@
             <div id="events-container"></div>
         </div>
 
+        <!-- Active Abilities -->
+        <div class="panel">
+            <div class="panel-title">Aktive Fähigkeiten</div>
+            <div class="btn-grid btn-grid-2">
+                <button class="btn btn-primary btn-sm" id="coolant-btn-Drive" onclick="coolantPulse('Drive')">⚡ Kühlen</button>
+                <button class="btn btn-primary btn-sm" id="coolant-btn-Shields" onclick="coolantPulse('Shields')">🛡 Kühlen</button>
+                <button class="btn btn-primary btn-sm" id="coolant-btn-Sensors" onclick="coolantPulse('Sensors')">📡 Kühlen</button>
+                <button class="btn btn-primary btn-sm" id="coolant-btn-Weapons" onclick="coolantPulse('Weapons')">🔫 Kühlen</button>
+            </div>
+            <div class="text-dim mt-4" style="font-size:11px;">Kühlpuls: -20 Hitze, 15s Cooldown pro System</div>
+        </div>
+
+        <!-- Resources -->
+        <div class="panel">
+            <div class="panel-title">Ressourcen</div>
+            <div class="status-row">
+                <span class="status-label">Ersatzteile</span>
+                <span class="status-value text-cyan" id="spare-parts-display" style="font-size:18px;">0</span>
+            </div>
+        </div>
+
         <!-- Actions -->
         <div class="panel">
             <div class="panel-title">Notfall-Aktionen</div>
-            <div class="btn-grid" style="grid-template-columns: 1fr 1fr 1fr;">
+            <div class="btn-grid" style="grid-template-columns: 1fr 1fr 1fr 1fr;">
                 <button class="btn btn-danger btn-sm" onclick="emergencyShutdown('Drive')">⚡ Aus</button>
                 <button class="btn btn-danger btn-sm" onclick="emergencyShutdown('Shields')">🛡 Aus</button>
                 <button class="btn btn-danger btn-sm" onclick="emergencyShutdown('Sensors')">📡 Aus</button>
+                <button class="btn btn-danger btn-sm" onclick="emergencyShutdown('Weapons')">🔫 Aus</button>
             </div>
             <button class="btn btn-warning btn-block mt-8" onclick="raiseWarning()">
                 Warnung an Hauptschirm senden

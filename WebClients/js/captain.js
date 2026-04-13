@@ -28,7 +28,7 @@ client.onState((msg) => {
     if (!msg.data) return;
     const d = msg.data;
 
-    document.getElementById('phase-display').textContent = msg.mission_phase || '---';
+    updatePhaseHeaderFromState(msg);
     document.getElementById('timer-display').textContent = formatTime(msg.elapsed_time || 0);
 
     // Hull

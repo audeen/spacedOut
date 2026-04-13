@@ -2,38 +2,55 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Godot;
+using SpacedOut.Sector;
 using SpacedOut.Shared;
 using SpacedOut.State;
 
 namespace SpacedOut.MainScreen;
 
 /// <summary>
-/// Renders a miniature sector star map on the main bridge HUD,
-/// mirroring the navigator's view with ship, waypoints, route, and contacts.
+/// Renders a miniature sector star map on the main bridge HUD.
+/// Draws entities from SectorData (single source of truth) and ship/route from GameState.
 /// </summary>
 public partial class StarMapDisplay : Control
 {
     private const float MapSize = 1000f;
 
-    private static readonly Color BgColor = new(0.03f, 0.05f, 0.10f, 0.88f);
     private static readonly Color GridColor = new(0.15f, 0.23f, 0.45f, 0.18f);
     private static readonly Color GridLabelColor = new(0.23f, 0.32f, 0.55f, 0.35f);
     private static readonly Color RouteColor = new(0.0f, 0.78f, 0.9f, 0.4f);
     private static readonly Color ShipColor = new(0.0f, 0.83f, 0.91f);
     private static readonly Color WpColor = new(0.0f, 0.83f, 0.91f, 0.85f);
     private static readonly Color WpReachedColor = new(0.0f, 0.83f, 0.91f, 0.25f);
-    private static readonly Color SensorRingColor = new(0.0f, 0.78f, 0.9f, 0.08f);
-    private static readonly Color BorderColor = new(0.0f, 0.6f, 0.75f, 0.5f);
-    private static readonly Color TitleColor = new(0.0f, 0.85f, 0.95f, 0.8f);
-    private static readonly Color LabelDimColor = new(0.5f, 0.5f, 0.55f, 0.7f);
+    private static readonly Color SensorRingColor = new(0.0f, 0.78f, 0.9f, 0.12f);
+    private static readonly Color AltHighColor = new(1.0f, 0.55f, 0.1f, 0.9f);
+    private static readonly Color AltLowColor = new(0.3f, 0.55f, 1.0f, 0.9f);
+    private static readonly Color FogColor = new(0.03f, 0.05f, 0.12f, 0.45f);
+    private static readonly Color VelocityPipColor = new(0.9f, 0.85f, 0.2f, 0.6f);
+    private static readonly Color ZoneProbedColor = new(1f, 1f, 1f, 0.12f);
+    private static readonly Color PinHighlightColor = new(0.0f, 0.85f, 0.95f, 0.6f);
+    private const float MapCenter = 500f;
 
     private GameState? _state;
+    private SectorData? _sector;
+    private HashSet<string> _pinnedIds = new();
     private float _animPulse;
 
     public void UpdateState(GameState state)
     {
         _state = state;
         QueueRedraw();
+    }
+
+    public void UpdateSector(SectorData? sector)
+    {
+        _sector = sector;
+        QueueRedraw();
+    }
+
+    public void UpdatePinnedIds(HashSet<string> ids)
+    {
+        _pinnedIds = ids;
     }
 
     public override void _Process(double delta)
@@ -54,21 +71,171 @@ public partial class StarMapDisplay : Control
         float ox = (w - mapArea) / 2f;
         float oy = 30f;
 
-        DrawRect(new Rect2(0, 0, w, h), BgColor);
-        DrawRect(new Rect2(0, 0, w, h), BorderColor, false, 1.5f);
-
-        DrawString(ThemeDB.FallbackFont, new Vector2(10, 18), "SEKTORKARTE",
-            HorizontalAlignment.Left, -1, 13, TitleColor);
-
-        DrawString(ThemeDB.FallbackFont, new Vector2(w - 10, 18), "NAV",
-            HorizontalAlignment.Right, -1, 11, LabelDimColor);
+        DisplayChrome.DrawPanelChrome(this, w, h, "SEKTORKARTE", "NAV");
 
         DrawGrid(ox, oy, mapArea, scale);
+        DrawFogOfWar(ox, oy, scale, mapArea);
+        DrawResourceZones(ox, oy, scale);
         DrawRouteLines(ox, oy, scale);
+        DrawSectorEntities(ox, oy, scale);
         DrawContacts(ox, oy, scale);
         DrawWaypoints(ox, oy, scale);
         DrawSensorRange(ox, oy, scale);
         DrawShip(ox, oy, scale);
+    }
+
+    // ── Sector entities from SectorData ─────────────────────────────
+
+    private void DrawSectorEntities(float ox, float oy, float scale)
+    {
+        if (_sector == null || _state == null) return;
+
+        float shipAlt = _state.Ship.PositionZ;
+
+        foreach (var entity in _sector.Entities)
+        {
+            if (entity.MapPresence != MapPresence.Point) continue;
+            if (entity.Discovery == DiscoveryState.Hidden && !entity.PreRevealed) continue;
+
+            var mapPos = CoordinateMapper.WorldToMap3D(entity.WorldPosition, _sector.LevelRadius);
+            var screenPos = new Vector2(ox + mapPos.X * scale, oy + mapPos.Y * scale);
+            var color = ThemeColors.GetContactColor(entity.ContactType);
+            float altDiff = mapPos.Z - shipAlt;
+
+            bool isDetectedOnly = entity.Discovery == DiscoveryState.Detected;
+            float baseAlpha = isDetectedOnly ? 0.5f : 1f;
+
+            DrawAltitudeStem(screenPos, altDiff);
+            DrawCircle(screenPos, isDetectedOnly ? 3f : 4f, new Color(color, baseAlpha));
+
+            if (!string.IsNullOrEmpty(entity.DisplayName) && !isDetectedOnly)
+            {
+                DrawString(ThemeDB.FallbackFont, screenPos + new Vector2(0, -10),
+                    entity.DisplayName, HorizontalAlignment.Center, -1, 9,
+                    new Color(color, 0.75f));
+            }
+
+            if (entity.ScanProgress > 0 && entity.ScanProgress < 100)
+            {
+                float arc = (entity.ScanProgress / 100f) * MathF.PI * 2f;
+                DrawArc(screenPos, 8f, -MathF.PI / 2f, -MathF.PI / 2f + arc, 16,
+                    new Color(ShipColor, 0.6f), 1.5f);
+            }
+
+            if (_pinnedIds.Contains(entity.Id))
+            {
+                float pulse = 8f + MathF.Sin(_animPulse) * 2f;
+                DrawArc(screenPos, pulse, 0, MathF.PI * 2f, 24, PinHighlightColor, 1.5f);
+            }
+
+            if (entity.IsMovable)
+                DrawVelocityPipFromEntity(screenPos, entity, scale);
+        }
+    }
+
+    // ── Resource zones ──────────────────────────────────────────────
+
+    private void DrawResourceZones(float ox, float oy, float scale)
+    {
+        if (_sector == null) return;
+
+        foreach (var zone in _sector.ResourceZones)
+        {
+            if (zone.Discovery == DiscoveryState.Hidden) continue;
+
+            var mapPos = CoordinateMapper.WorldToMap3D(zone.Center, _sector.LevelRadius);
+            var screenPos = new Vector2(ox + mapPos.X * scale, oy + mapPos.Y * scale);
+            float screenRadius = zone.Radius * (MapCenter / _sector.LevelRadius) * scale;
+
+            var fillColor = new Color(zone.MapColor, 0.08f * zone.Density);
+            var borderColor = new Color(zone.MapColor, 0.25f);
+
+            DrawCircle(screenPos, screenRadius, fillColor);
+            DrawArc(screenPos, screenRadius, 0, MathF.PI * 2f, 32, borderColor, 1.5f);
+
+            if (zone.Discovery == DiscoveryState.Scanned)
+            {
+                string label = zone.ResourceType.ToString();
+                DrawString(ThemeDB.FallbackFont, screenPos + new Vector2(0, -screenRadius - 4),
+                    label, HorizontalAlignment.Center, -1, 9,
+                    new Color(zone.MapColor, 0.7f));
+            }
+        }
+    }
+
+    // ── Legacy contacts from GameState (for moving objects synced via network) ──
+
+    private void DrawContacts(float ox, float oy, float scale)
+    {
+        if (_state == null || _sector != null) return;
+
+        float shipAlt = _state.Ship.PositionZ;
+        var visible = _state.Contacts.FindAll(c =>
+            c.Discovery == DiscoveryState.Scanned ||
+            (c.Discovery == DiscoveryState.Detected && IsInSensorRange(c)));
+
+        foreach (var c in visible)
+        {
+            var pos = new Vector2(ox + c.PositionX * scale, oy + c.PositionY * scale);
+            var color = ThemeColors.GetContactColor(c.Type);
+            float altDiff = c.PositionZ - shipAlt;
+            bool isDetectedOnly = c.Discovery == DiscoveryState.Detected;
+            float baseAlpha = isDetectedOnly ? 0.5f : 1f;
+
+            DrawAltitudeStem(pos, altDiff);
+            DrawCircle(pos, isDetectedOnly ? 3f : 4f, new Color(color, baseAlpha));
+
+            if (!string.IsNullOrEmpty(c.DisplayName) && !isDetectedOnly)
+            {
+                DrawString(ThemeDB.FallbackFont, pos + new Vector2(0, -10),
+                    c.DisplayName, HorizontalAlignment.Center, -1, 9,
+                    new Color(color, 0.75f));
+            }
+
+            if (c.IsScanning)
+            {
+                float pulse = 5f + MathF.Sin(_animPulse) * 3f;
+                DrawArc(pos, pulse + 4f, 0, MathF.PI * 2f, 24,
+                    new Color(color, 0.35f), 1f);
+            }
+
+            DrawVelocityPip(pos, c, scale);
+        }
+    }
+
+    // ── Drawing helpers ─────────────────────────────────────────────
+
+    private void DrawVelocityPipFromEntity(Vector2 contactPos, SectorEntity e, float scale)
+    {
+        float vx = e.Velocity.X;
+        float vz = e.Velocity.Z;
+        if (MathF.Abs(vx) < 0.1f && MathF.Abs(vz) < 0.1f) return;
+
+        float mapScale = MapCenter / (_sector?.LevelRadius ?? 1f) * scale;
+        var velDir = new Vector2(vx, vz);
+        float speed = velDir.Length();
+        velDir /= speed;
+
+        float lineLen = MathF.Min(speed * 15f * mapScale, 50f);
+        DrawLine(contactPos, contactPos + velDir * lineLen,
+            new Color(VelocityPipColor, 0.3f), 1f);
+    }
+
+    private void DrawFogOfWar(float ox, float oy, float scale, float mapArea)
+    {
+        if (_state == null) return;
+        float sensorRange = ShipCalculations.CalculateSensorRange(_state.Ship);
+        float sensorRadius = sensorRange * scale;
+        var shipScreen = new Vector2(ox + _state.Ship.PositionX * scale, oy + _state.Ship.PositionY * scale);
+
+        for (int ring = 0; ring < 20; ring++)
+        {
+            float r = sensorRadius + ring * 12f;
+            if (r > mapArea * 1.5f) break;
+            float alpha = MathF.Min(ring * 0.03f, 0.45f);
+            DrawArc(shipScreen, r, 0, MathF.PI * 2f, 48,
+                new Color(FogColor, alpha), 12f);
+        }
     }
 
     private void DrawGrid(float ox, float oy, float mapArea, float scale)
@@ -103,58 +270,26 @@ public partial class StarMapDisplay : Control
         }
     }
 
-    private void DrawContacts(float ox, float oy, float scale)
-    {
-        if (_state == null) return;
-        var visible = _state.Contacts.FindAll(c => c.ScanProgress > 20 || c.IsVisibleOnMainScreen);
-
-        foreach (var c in visible)
-        {
-            var pos = new Vector2(ox + c.PositionX * scale, oy + c.PositionY * scale);
-            var color = ThemeColors.GetContactColor(c.Type);
-
-            DrawCircle(pos, 4f, color);
-
-            if (!string.IsNullOrEmpty(c.DisplayName))
-            {
-                DrawString(ThemeDB.FallbackFont, pos + new Vector2(0, -10),
-                    c.DisplayName, HorizontalAlignment.Center, -1, 9,
-                    new Color(color, 0.75f));
-            }
-
-            if (c.IsScanning)
-            {
-                float pulse = 5f + MathF.Sin(_animPulse) * 3f;
-                DrawArc(pos, pulse + 4f, 0, MathF.PI * 2, 24,
-                    new Color(color, 0.35f), 1f);
-            }
-
-            if (c.ScanProgress > 0 && c.ScanProgress < 100)
-            {
-                float arc = (c.ScanProgress / 100f) * MathF.PI * 2f;
-                DrawArc(pos, 8f, -MathF.PI / 2f, -MathF.PI / 2f + arc, 16,
-                    new Color(ShipColor, 0.6f), 1.5f);
-            }
-        }
-    }
-
     private void DrawWaypoints(float ox, float oy, float scale)
     {
         if (_state == null) return;
+        float shipAlt = _state.Ship.PositionZ;
 
         foreach (var wp in _state.Route.Waypoints)
         {
             var pos = new Vector2(ox + wp.X * scale, oy + wp.Y * scale);
             var color = wp.IsReached ? WpReachedColor : WpColor;
             float sz = 5f;
+            float altDiff = wp.Z - shipAlt;
+
+            if (!wp.IsReached)
+                DrawAltitudeStem(pos, altDiff);
 
             var wpRect = new Rect2(pos.X - sz, pos.Y - sz, sz * 2, sz * 2);
             DrawRect(wpRect, color, false, 1.5f);
 
             if (!wp.IsReached)
-            {
                 DrawRect(wpRect, new Color(color, 0.1f));
-            }
 
             if (!string.IsNullOrEmpty(wp.Label))
             {
@@ -168,8 +303,9 @@ public partial class StarMapDisplay : Control
     {
         if (_state == null) return;
         var shipScreen = new Vector2(ox + _state.Ship.PositionX * scale, oy + _state.Ship.PositionY * scale);
-        float sensorRadius = 350f * scale;
-        DrawArc(shipScreen, sensorRadius, 0, MathF.PI * 2f, 48, SensorRingColor, 1f);
+        float sensorRange = ShipCalculations.CalculateSensorRange(_state.Ship);
+        float sensorRadius = sensorRange * scale;
+        DrawArc(shipScreen, sensorRadius, 0, MathF.PI * 2f, 48, SensorRingColor, 1.5f);
     }
 
     private void DrawShip(float ox, float oy, float scale)
@@ -186,13 +322,70 @@ public partial class StarMapDisplay : Control
         };
         DrawColoredPolygon(tri, ShipColor);
 
+        float alt = _state.Ship.PositionZ - MapCenter;
+        string altText = $"ALT {(alt >= 0 ? "+" : "")}{alt:F0}";
         DrawString(ThemeDB.FallbackFont, shipScreen + new Vector2(0, sz + 12),
             "SCHIFF", HorizontalAlignment.Center, -1, 9, ShipColor);
+        DrawString(ThemeDB.FallbackFont, shipScreen + new Vector2(0, sz + 22),
+            altText, HorizontalAlignment.Center, -1, 8,
+            new Color(ShipColor, 0.7f));
+    }
+
+    private bool IsInSensorRange(Contact c)
+    {
+        if (_state == null) return false;
+        float range = ShipCalculations.CalculateSensorRange(_state.Ship);
+        float dx = c.PositionX - _state.Ship.PositionX;
+        float dy = c.PositionY - _state.Ship.PositionY;
+        return dx * dx + dy * dy <= range * range;
+    }
+
+    private void DrawVelocityPip(Vector2 contactPos, Contact c, float scale)
+    {
+        float vx = c.VelocityX;
+        float vy = c.VelocityY;
+        if (MathF.Abs(vx) < 0.1f && MathF.Abs(vy) < 0.1f) return;
+
+        var velDir = new Vector2(vx, vy);
+        float speed = velDir.Length();
+        velDir /= speed;
+        float lineLen = MathF.Min(speed * 15f * scale, 50f);
+        DrawLine(contactPos, contactPos + velDir * lineLen,
+            new Color(VelocityPipColor, 0.3f), 1f);
+
+        for (int i = 1; i <= 3; i++)
+        {
+            float t = i * 5f;
+            var pipPos = contactPos + new Vector2(vx * t * scale, vy * t * scale);
+            float pipSize = 2f - i * 0.4f;
+            float pipAlpha = 0.7f - i * 0.15f;
+            DrawCircle(pipPos, MathF.Max(pipSize, 0.8f), new Color(VelocityPipColor, pipAlpha));
+        }
+    }
+
+    private void DrawAltitudeStem(Vector2 pos, float altDiff)
+    {
+        if (MathF.Abs(altDiff) < 5f) return;
+
+        float stemLen = Math.Clamp(MathF.Abs(altDiff) * 0.4f, 25f, 80f);
+        float stemDir = altDiff > 0 ? -1f : 1f;
+        var stemStart = pos + new Vector2(0, stemDir * 5f);
+        var stemEnd = pos + new Vector2(0, stemDir * stemLen);
+        var col = altDiff > 0 ? AltHighColor : AltLowColor;
+        var colDim = new Color(col, col.A * 0.55f);
+
+        DrawLine(stemStart, stemEnd, colDim, 2f);
+        DrawLine(stemEnd - new Vector2(6f, 0), stemEnd + new Vector2(6f, 0), col, 2.5f);
+        DrawLine(pos + new Vector2(-4, 0), pos + new Vector2(4, 0), colDim, 1.5f);
+
+        string label = altDiff >= 0 ? $"+{altDiff:F0}" : $"{altDiff:F0}";
+        DrawString(ThemeDB.FallbackFont, stemEnd + new Vector2(9, 4), label,
+            HorizontalAlignment.Left, -1, 9, col);
     }
 
     private void DrawDashedLine(Vector2 from, Vector2 to, Color color, float width, float dashLen)
     {
-        var dir = (to - from);
+        var dir = to - from;
         float length = dir.Length();
         if (length < 1f) return;
         dir /= length;
@@ -212,5 +405,4 @@ public partial class StarMapDisplay : Control
             drawing = !drawing;
         }
     }
-
 }

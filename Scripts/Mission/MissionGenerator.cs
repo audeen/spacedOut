@@ -2,53 +2,76 @@ using System;
 using System.Linq;
 using Godot;
 using SpacedOut.LevelGen;
+using SpacedOut.Sector;
+using SpacedOut.Shared;
 using SpacedOut.State;
 
 namespace SpacedOut.Mission;
 
 /// <summary>
-/// Bridges the procedural LevelGenerator output with the mission
-/// data structures consumed by MissionController, StarMapDisplay
-/// and TacticalDisplay.
-///
-/// Call <see cref="PopulateMission"/> after a level has been generated
-/// and before <see cref="MissionController.StartMission"/>.
+/// Bridges SectorData with GameState contacts consumed by MissionController
+/// and the network clients. Reads from SectorData (single source of truth)
+/// and writes into GameState.Contacts for WebClient compatibility.
 /// </summary>
 public static class MissionGenerator
 {
     /// <summary>
-    /// Populates GameState with contacts, waypoints, briefing and ship
-    /// position derived from the current level.
+    /// Populates GameState from SectorData (preferred path).
     /// </summary>
-    public static void PopulateMission(GameState state, LevelGenerator level)
+    public static void PopulateMission(GameState state, SectorData sector)
     {
-        var biome = BiomeDefinition.Get(level.CurrentBiomeId);
-        float mapScale = 500f / biome.LevelRadius;
-
         state.Contacts.Clear();
         state.Route.Waypoints.Clear();
+        state.Route.CurrentWaypointIndex = 0;
         state.ActiveEvents.Clear();
         state.Overlays.Clear();
         state.Mission = new MissionState();
 
-        var shipMap = Map(level.SpawnPoint, mapScale);
+        var shipMap = CoordinateMapper.WorldToMap3D(sector.SpawnPoint, sector.LevelRadius);
         state.Ship.PositionX = shipMap.X;
         state.Ship.PositionY = shipMap.Y;
+        state.Ship.PositionZ = shipMap.Z;
 
-        PopulateMissionInfo(state, level.CurrentBiomeId, level.CurrentSeed);
-        PopulateWaypoints(state, level, mapScale);
-        PopulateContacts(state, level, mapScale);
+        state.ContactsState.ActiveProbes.Clear();
+        state.ContactsState.ProbeCharges = 3;
+        state.ContactsState.ProbeRechargeTimer = 0;
 
-        GD.Print($"[MissionGen] {state.Route.Waypoints.Count} Waypoints, " +
-                 $"{state.Contacts.Count} Kontakte generiert.");
+        PopulateMissionInfo(state, sector.BiomeId, sector.Seed);
+        PopulateContactsFromSector(state, sector);
+        PopulateResourceZones(state, sector);
+
+        GD.Print($"[MissionGen] {state.Contacts.Count} Kontakte, {state.ResourceZones.Count} Zonen generiert.");
     }
 
-    // ── coordinate helper ───────────────────────────────────────────
+    /// <summary>
+    /// Legacy overload: reads from LevelGenerator (delegates to SectorData path if available).
+    /// </summary>
+    public static void PopulateMission(GameState state, LevelGenerator level)
+    {
+        if (level.CurrentSectorData != null)
+        {
+            PopulateMission(state, level.CurrentSectorData);
+            return;
+        }
 
-    private static Vector2 Map(Vector3 pos, float scale) =>
-        new(pos.X * scale + 500f, pos.Z * scale + 500f);
+        // Fallback for standalone mode without SectorData
+        var biome = BiomeDefinition.Get(level.CurrentBiomeId);
+        state.Contacts.Clear();
+        state.Route.Waypoints.Clear();
+        state.Route.CurrentWaypointIndex = 0;
+        state.ActiveEvents.Clear();
+        state.Overlays.Clear();
+        state.Mission = new MissionState();
 
-    // ── mission identity ────────────────────────────────────────────
+        var shipMap = CoordinateMapper.WorldToMap3D(level.SpawnPoint, biome.LevelRadius);
+        state.Ship.PositionX = shipMap.X;
+        state.Ship.PositionY = shipMap.Y;
+        state.Ship.PositionZ = shipMap.Z;
+
+        PopulateMissionInfo(state, level.CurrentBiomeId, level.CurrentSeed);
+    }
+
+    // ── Mission identity ────────────────────────────────────────────
 
     private static void PopulateMissionInfo(GameState state, string biomeId, int seed)
     {
@@ -86,203 +109,88 @@ public static class MissionGenerator
         }
     }
 
-    // ── waypoints ───────────────────────────────────────────────────
+    // ── Contacts from SectorData entities ───────────────────────────
 
-    private static void PopulateWaypoints(
-        GameState state, LevelGenerator level, float mapScale)
+    private static void PopulateContactsFromSector(GameState state, SectorData sector)
     {
-        var spawnMap = Map(level.SpawnPoint, mapScale);
-        var exitMap = Map(level.ExitPoint, mapScale);
-
-        var landmark = level.SpawnedObjects.FirstOrDefault(o => o.IsLandmark);
-        var landmarkMap = landmark != null
-            ? Map(landmark.Position, mapScale)
-            : (spawnMap + exitMap) / 2f;
-        var landmark3D = landmark?.Position ?? Vector3.Zero;
-
-        // 1 – Start
-        state.Route.Waypoints.Add(new Waypoint
+        // Encounter marker position for MissionController
+        var encEntity = sector.Entities.FirstOrDefault(e =>
+            e.Type == SectorEntityType.EncounterMarker);
+        if (encEntity != null)
         {
-            Id = "wp_start", X = spawnMap.X, Y = spawnMap.Y,
-            Label = "Start", IsReached = true,
-        });
-
-        // Collect POI/marker objects along the route for intermediate waypoints
-        var markers = level.SpawnedObjects
-            .Where(o => o.Category >= AssetCategory.ResourceNode
-                        && o.Category < AssetCategory.EncounterMarker)
-            .ToList();
-
-        // 2 – First approach: POI closest to the 1/3 point between spawn and landmark
-        var thirdPos3D = level.SpawnPoint + (landmark3D - level.SpawnPoint) * 0.33f;
-        var approach1 = markers
-            .OrderBy(o => o.Position.DistanceTo(thirdPos3D))
-            .FirstOrDefault();
-
-        if (approach1 != null)
-        {
-            var pm = Map(approach1.Position, mapScale);
-            state.Route.Waypoints.Add(new Waypoint
-            {
-                Id = "wp_approach_1", X = pm.X, Y = pm.Y,
-                Label = "Sondierung",
-            });
-        }
-
-        // 3 – Second approach: POI closest to the 2/3 point
-        var twoThirdPos3D = level.SpawnPoint + (landmark3D - level.SpawnPoint) * 0.66f;
-        var approach2 = markers
-            .Where(o => o != approach1)
-            .OrderBy(o => o.Position.DistanceTo(twoThirdPos3D))
-            .FirstOrDefault();
-
-        if (approach2 != null)
-        {
-            var pm = Map(approach2.Position, mapScale);
-            state.Route.Waypoints.Add(new Waypoint
-            {
-                Id = "wp_approach_2", X = pm.X, Y = pm.Y,
-                Label = "Annäherung",
-            });
-        }
-
-        // 4 – Target (landmark)
-        state.Route.Waypoints.Add(new Waypoint
-        {
-            Id = "wp_target", X = landmarkMap.X, Y = landmarkMap.Y,
-            Label = level.CurrentBiomeId switch
-            {
-                "asteroid_field" => "Asteroiden-Komplex",
-                "wreck_zone" => "Hauptwrack",
-                "station_periphery" => "Stationskern",
-                _ => "Zielgebiet",
-            },
-        });
-
-        // 5 – Exit
-        state.Route.Waypoints.Add(new Waypoint
-        {
-            Id = "wp_exit", X = exitMap.X, Y = exitMap.Y,
-            Label = "Ausgang",
-        });
-
-        state.Route.CurrentWaypointIndex = 1;
-    }
-
-    // ── contacts ────────────────────────────────────────────────────
-
-    private static void PopulateContacts(
-        GameState state, LevelGenerator level, float mapScale)
-    {
-        // Primary target – the landmark
-        var landmark = level.SpawnedObjects.FirstOrDefault(o => o.IsLandmark);
-        if (landmark != null)
-        {
-            var p = Map(landmark.Position, mapScale);
-            state.Contacts.Add(new Contact
-            {
-                Id = "primary_target",
-                Type = ContactType.Unknown,
-                DisplayName = level.CurrentBiomeId switch
-                {
-                    "asteroid_field" => "Massiver Asteroiden-Komplex",
-                    "wreck_zone" => "Schwaches Notsignal",
-                    "station_periphery" => "Stationssignal",
-                    _ => "Unbekanntes Objekt",
-                },
-                PositionX = p.X, PositionY = p.Y,
-                ThreatLevel = 0, ScanProgress = 10,
-                IsVisibleOnMainScreen = true,
-            });
-        }
-
-        // Cluster anomalies – all sizable mid-scale objects (up to 3)
-        int clusterIdx = 0;
-        foreach (var obj in level.SpawnedObjects
-            .Where(o => !o.IsLandmark && o.ObjectRadius >= 8f)
-            .Take(3))
-        {
-            var p = Map(obj.Position, mapScale);
-            state.Contacts.Add(new Contact
-            {
-                Id = $"cluster_anomaly_{clusterIdx}",
-                Type = ContactType.Anomaly,
-                DisplayName = level.CurrentBiomeId switch
-                {
-                    "asteroid_field" => "Dichtes Asteroidenfeld",
-                    "wreck_zone" => "Trümmerfeld",
-                    "station_periphery" => "Frachtverkehr",
-                    _ => "Anomalie",
-                },
-                PositionX = p.X, PositionY = p.Y,
-                ThreatLevel = 2, ScanProgress = 40,
-                IsVisibleOnMainScreen = true,
-            });
-            clusterIdx++;
-        }
-
-        // Encounter marker → store position for TriggerUnknownContact
-        var encounter = level.SpawnedObjects
-            .FirstOrDefault(o => o.Category == AssetCategory.EncounterMarker);
-        if (encounter != null)
-        {
-            var ep = Map(encounter.Position, mapScale);
+            var ep = CoordinateMapper.WorldToMap3D(encEntity.WorldPosition, sector.LevelRadius);
             state.Mission.EncounterSpawnX = ep.X;
             state.Mission.EncounterSpawnY = ep.Y;
         }
 
-        // Additional contacts from markers / beacons / POIs
-        int idx = 0;
-        foreach (var obj in level.SpawnedObjects)
+        foreach (var entity in sector.Entities)
         {
-            if (idx >= 8) break;
+            if (entity.MapPresence != MapPresence.Point) continue;
 
-            var p = Map(obj.Position, mapScale);
-            Contact? c = obj.Category switch
+            var p = CoordinateMapper.WorldToMap3D(entity.WorldPosition, sector.LevelRadius);
+            var contact = new Contact
             {
-                AssetCategory.Beacon => new Contact
-                {
-                    Id = $"beacon_{idx}", Type = ContactType.Neutral,
-                    DisplayName = "Signalboje",
-                    PositionX = p.X, PositionY = p.Y,
-                    ScanProgress = 60, IsVisibleOnMainScreen = true,
-                },
-                AssetCategory.ResourceNode => new Contact
-                {
-                    Id = $"resource_{idx}", Type = ContactType.Anomaly,
-                    DisplayName = "Ressourcensignal",
-                    PositionX = p.X, PositionY = p.Y,
-                    ThreatLevel = 1, ScanProgress = 30,
-                },
-                AssetCategory.LootMarker => new Contact
-                {
-                    Id = $"loot_{idx}", Type = ContactType.Unknown,
-                    DisplayName = "Ladungsrest",
-                    PositionX = p.X, PositionY = p.Y,
-                    ThreatLevel = 1, ScanProgress = 20,
-                },
-                AssetCategory.PoiMarker => new Contact
-                {
-                    Id = $"poi_{idx}", Type = ContactType.Anomaly,
-                    DisplayName = "Unidentifizierte Anomalie",
-                    PositionX = p.X, PositionY = p.Y,
-                    ThreatLevel = 2, ScanProgress = 15,
-                },
-                AssetCategory.UtilityNode => new Contact
-                {
-                    Id = $"utility_{idx}", Type = ContactType.Neutral,
-                    DisplayName = "Versorgungsknoten",
-                    PositionX = p.X, PositionY = p.Y,
-                    ScanProgress = 50, IsVisibleOnMainScreen = true,
-                },
-                _ => null,
+                Id = entity.Id,
+                Type = entity.ContactType,
+                DisplayName = entity.DisplayName,
+                PositionX = p.X,
+                PositionY = p.Y,
+                PositionZ = p.Z,
+                ThreatLevel = entity.ThreatLevel,
+                ScanProgress = entity.ScanProgress,
+                Discovery = entity.Discovery,
+                PreRevealed = entity.PreRevealed,
+                VelocityX = entity.Velocity.X,
+                VelocityY = entity.Velocity.Z,
+                VelocityZ = entity.Velocity.Y,
             };
 
-            if (c != null)
+            if (entity.PreRevealed)
             {
-                state.Contacts.Add(c);
-                idx++;
+                contact.ReleasedToNav = true;
+                contact.IsVisibleOnMainScreen = true;
             }
+
+            if (entity.IsLandmark)
+            {
+                contact.Id = "primary_target";
+                contact.DisplayName = sector.BiomeId switch
+                {
+                    "asteroid_field" => "Massiver Asteroiden-Komplex",
+                    "wreck_zone" => "Schwaches Notsignal",
+                    "station_periphery" => "Stationssignal",
+                    _ => entity.DisplayName,
+                };
+            }
+
+            state.Contacts.Add(contact);
+        }
+    }
+
+    // ── Resource zones in map-space for web clients ─────────────────
+
+    private static void PopulateResourceZones(GameState state, SectorData sector)
+    {
+        state.ResourceZones.Clear();
+        float mapScale = 500f / sector.LevelRadius;
+
+        foreach (var zone in sector.ResourceZones)
+        {
+            var mapPos = CoordinateMapper.WorldToMap3D(zone.Center, sector.LevelRadius);
+            var c = zone.MapColor;
+            string hex = $"#{(int)(c.R * 255):X2}{(int)(c.G * 255):X2}{(int)(c.B * 255):X2}";
+
+            state.ResourceZones.Add(new MapResourceZone
+            {
+                Id = zone.Id,
+                ResourceType = zone.ResourceType.ToString(),
+                X = mapPos.X,
+                Y = mapPos.Y,
+                MapRadius = zone.Radius * mapScale,
+                Density = zone.Density,
+                MapColorHex = hex,
+                Discovery = zone.Discovery.ToString(),
+            });
         }
     }
 }

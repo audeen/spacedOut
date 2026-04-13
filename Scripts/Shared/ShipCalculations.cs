@@ -1,3 +1,4 @@
+using System;
 using SpacedOut.State;
 
 namespace SpacedOut.Shared;
@@ -31,20 +32,23 @@ public static class ShipCalculations
         _ => 1f
     };
 
-    public static float CalculateSensorRange(ShipState ship)
+    public static float CalculateSensorRange(ShipState ship, bool activeSensors = false)
     {
         const float baseRange = 500f;
-        float energyMultiplier = ship.Energy.Sensors / 33f;
+        float energyMultiplier = ship.Energy.Sensors / 25f;
         var sensorStatus = ship.Systems[SystemId.Sensors].Status;
         float statusMultiplier = GetStatusMultiplier(sensorStatus);
-        return baseRange * energyMultiplier * statusMultiplier;
+        float heatMult = ship.Systems[SystemId.Sensors].GetHeatEfficiencyMultiplier();
+        float activeMult = activeSensors ? 1.5f : 1f;
+        return baseRange * energyMultiplier * statusMultiplier * heatMult * activeMult;
     }
 
     public static float CalculateShipSpeed(ShipState ship)
     {
-        float driveEnergy = ship.Energy.Drive / 33f;
+        float driveEnergy = ship.Energy.Drive / 25f;
         float statusMult = GetDriveStatusMultiplier(
             ship.Systems[SystemId.Drive].Status);
+        float heatMult = ship.Systems[SystemId.Drive].GetHeatEfficiencyMultiplier();
 
         float modeSpeedMult = ship.FlightMode switch
         {
@@ -56,6 +60,25 @@ public static class ShipCalculations
         };
 
         float baseSpeed = ship.SpeedLevel * (ShipState.MaxSpeed / ShipState.MaxSpeedLevel);
-        return baseSpeed * driveEnergy * statusMult * modeSpeedMult;
+        return baseSpeed * driveEnergy * statusMult * heatMult * modeSpeedMult;
+    }
+
+    public static float CalculateShieldAbsorption(ShipState ship)
+    {
+        float shieldEnergy = ship.Energy.Shields;
+        var shieldStatus = ship.Systems[SystemId.Shields].Status;
+        if (shieldStatus == SystemStatus.Offline) return 0f;
+
+        float statusMult = GetStatusMultiplier(shieldStatus);
+        float heatMult = ship.Systems[SystemId.Shields].GetHeatEfficiencyMultiplier();
+        return Math.Clamp(shieldEnergy / 50f * statusMult * heatMult, 0f, 0.6f);
+    }
+
+    public static float CalculateTargetLockSpeed(ShipState ship)
+    {
+        float weaponEnergy = ship.Energy.Weapons / 25f;
+        float statusMult = GetStatusMultiplier(ship.Systems[SystemId.Weapons].Status);
+        float heatMult = ship.Systems[SystemId.Weapons].GetHeatEfficiencyMultiplier();
+        return weaponEnergy * statusMult * heatMult;
     }
 }

@@ -2,10 +2,6 @@ using Godot;
 
 namespace SpacedOut.LevelGen;
 
-/// <summary>
-/// Wraps every spawned placeholder or real asset node.
-/// Carries the metadata the generator and the later AssetReplacer need.
-/// </summary>
 public partial class SpawnedObject : Node3D
 {
     public string InstanceId { get; set; } = "";
@@ -17,4 +13,7 @@ public partial class SpawnedObject : Node3D
     public bool IsLandmark { get; set; }
     public string? RealScenePath { get; set; }
     public bool IsPlaceholder { get; set; } = true;
+
+    /// <summary>Links back to the SectorEntity.Id this node represents.</summary>
+    public string SectorEntityId { get; set; } = "";
 }

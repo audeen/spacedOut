@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Godot;
-using SpacedOut.Campaign;
+using SpacedOut.Run;
 using SpacedOut.Shared;
 using SpacedOut.State;
 
@@ -13,18 +13,16 @@ public partial class MissionController : Node
 
     [Signal] public delegate void PhaseChangedEventHandler(string phase);
     [Signal] public delegate void EventTriggeredEventHandler(string eventId);
-    [Signal] public delegate void MissionEndedEventHandler(string result);
+    [Signal] public delegate void MissionEndedEventHandler(int result);
 
     private readonly HashSet<string> _triggeredEvents = new();
     private NodeEncounterConfig? _encounterConfig;
+    private bool _useStructuredPhases;
 
     private const float DefaultPhase1End = 60f;
     private const float DefaultPhase2End = 180f;
     private const float DefaultPhase3End = 420f;
-    private const float DefaultPhase4End = 600f;
-    private const float DefaultMissionTimeout = 720f;
 
-    private float _missionTimeout;
     private float _damageMultiplier = 1f;
 
     public void Initialize(GameState state)
@@ -35,44 +33,30 @@ public partial class MissionController : Node
     public void ApplyEncounterConfig(NodeEncounterConfig? config)
     {
         _encounterConfig = config;
-        if (config != null)
-        {
-            _missionTimeout = config.TimeLimit;
-            _damageMultiplier = config.DamageMultiplier;
-        }
-        else
-        {
-            _missionTimeout = DefaultMissionTimeout;
-            _damageMultiplier = 1f;
-        }
+        _damageMultiplier = config != null ? config.DamageMultiplier : 1f;
+        _useStructuredPhases = config?.UseStructuredPhases ?? false;
     }
 
     public void StartMission()
     {
         _triggeredEvents.Clear();
         _state.MissionStarted = true;
-        _state.Mission.Phase = MissionPhase.Briefing;
         _state.Mission.ElapsedTime = 0;
         _state.Mission.PrimaryObjective = ObjectiveStatus.InProgress;
         _state.Mission.SecondaryObjective = ObjectiveStatus.InProgress;
+        _state.Mission.UseStructuredMissionPhases = _useStructuredPhases;
 
         _state.Ship.FlightMode = FlightMode.Cruise;
         _state.Ship.SpeedLevel = 2;
         _state.Ship.HullIntegrity = 100;
+        _state.Engagement = EngagementRule.Standard;
+        _state.Gunner = new GunnerState();
 
-        if (_encounterConfig == null)
-        {
-            _missionTimeout = DefaultMissionTimeout;
-            _damageMultiplier = 1f;
-        }
-
-        // MissionGenerator has already populated contacts, waypoints,
-        // briefing & ship position.  Fall back to hardcoded defaults
-        // only when nothing was pre-populated.
+        // MissionGenerator has already populated contacts, briefing & ship position.
+        // Fall back to hardcoded contacts only when nothing was pre-populated.
+        // Route waypoints are set by the navigator (no auto-waypoints).
         if (_state.Contacts.Count == 0)
             SetupContacts();
-        if (_state.Route.Waypoints.Count == 0)
-            SetupInitialRoute();
         if (string.IsNullOrEmpty(_state.Mission.BriefingText))
         {
             _state.Mission.MissionTitle = "Bergung unter Störung";
@@ -88,7 +72,16 @@ public partial class MissionController : Node
             Message = $"Mission gestartet: {_state.Mission.MissionTitle}"
         });
 
-        TransitionToPhase(MissionPhase.Anflug);
+        if (_useStructuredPhases)
+        {
+            _state.Mission.Phase = MissionPhase.Briefing;
+            TransitionToPhase(MissionPhase.Anflug);
+        }
+        else
+        {
+            _state.Mission.Phase = MissionPhase.Operational;
+            _state.Mission.PhaseTimer = 0;
+        }
     }
 
     private void SetupContacts()
@@ -103,7 +96,11 @@ public partial class MissionController : Node
             PositionX = 700,
             PositionY = 650,
             ThreatLevel = 0,
-            ScanProgress = 10,
+            ScanProgress = 0,
+            Discovery = DiscoveryState.Scanned,
+            ReleasedToNav = true,
+            IsVisibleOnMainScreen = true,
+            PreRevealed = true,
         });
 
         _state.Contacts.Add(new Contact
@@ -114,27 +111,23 @@ public partial class MissionController : Node
             PositionX = 400,
             PositionY = 350,
             ThreatLevel = 2,
-            ScanProgress = 40,
-            IsVisibleOnMainScreen = true,
+            ScanProgress = 0,
+            Discovery = DiscoveryState.Hidden,
         });
-    }
 
-    private void SetupInitialRoute()
-    {
-        _state.Route.Waypoints.Clear();
-        _state.Route.Waypoints.Add(new Waypoint
+        _state.Contacts.Add(new Contact
         {
-            Id = "wp_start", X = 100, Y = 100, Label = "Start", IsReached = true
+            Id = "patrol_drone",
+            Type = ContactType.Unknown,
+            DisplayName = "Bewegliches Objekt",
+            PositionX = 650,
+            PositionY = 200,
+            ThreatLevel = 4,
+            ScanProgress = 0,
+            VelocityX = 8f,
+            VelocityY = 0f,
+            Discovery = DiscoveryState.Hidden,
         });
-        _state.Route.Waypoints.Add(new Waypoint
-        {
-            Id = "wp_approach", X = 400, Y = 400, Label = "Annäherung"
-        });
-        _state.Route.Waypoints.Add(new Waypoint
-        {
-            Id = "wp_target", X = 700, Y = 650, Label = "Zielgebiet"
-        });
-        _state.Route.CurrentWaypointIndex = 1;
     }
 
     public void Update(float delta)
@@ -143,16 +136,24 @@ public partial class MissionController : Node
         if (_state.Mission.Phase == MissionPhase.Ended) return;
 
         _state.Mission.ElapsedTime += delta;
-        _state.Mission.PhaseTimer += delta;
+        if (_useStructuredPhases)
+            _state.Mission.PhaseTimer += delta;
 
         UpdateShipMovement(delta);
         UpdateSystems(delta);
+        UpdateSensorVisibility();
+        UpdateProbes(delta);
         UpdateScanning(delta);
+        UpdateWeaknessAnalysis(delta);
+        UpdateGunner(delta);
+        UpdateEnemyAttacks(delta);
         UpdateOverlays(delta);
         UpdateContactMovement(delta);
-        CheckPhaseTransitions();
+        UpdatePatrolDrone(delta);
+        if (_useStructuredPhases)
+            CheckPhaseTransitions();
         CheckEvents();
-        CheckEndConditions();
+        CheckEndConditions(delta);
     }
 
     private void UpdateShipMovement(float delta)
@@ -168,7 +169,8 @@ public partial class MissionController : Node
         var target = unreached[0];
         float dx = target.X - ship.PositionX;
         float dy = target.Y - ship.PositionY;
-        float dist = MathF.Sqrt(dx * dx + dy * dy);
+        float dz = target.Z - ship.PositionZ;
+        float dist = MathF.Sqrt(dx * dx + dy * dy + dz * dz);
 
         if (dist < 5f)
         {
@@ -187,29 +189,45 @@ public partial class MissionController : Node
 
         float moveX = (dx / dist) * speed * delta;
         float moveY = (dy / dist) * speed * delta;
+        float moveZ = (dz / dist) * speed * delta;
 
         if (MathF.Abs(moveX) > MathF.Abs(dx)) moveX = dx;
         if (MathF.Abs(moveY) > MathF.Abs(dy)) moveY = dy;
+        if (MathF.Abs(moveZ) > MathF.Abs(dz)) moveZ = dz;
 
         ship.PositionX += moveX;
         ship.PositionY += moveY;
+        ship.PositionZ += moveZ;
     }
 
     private void UpdateSystems(float delta)
     {
         var ship = _state.Ship;
+        var dbg = _state.Debug;
 
         foreach (var kvp in ship.Systems)
         {
             var sys = kvp.Value;
 
-            // Heat generation based on energy allocation
+            if (sys.CoolantCooldown > 0)
+            {
+                float cdSpeed = dbg.NoCooldowns ? 10f : 1f;
+                sys.CoolantCooldown = Math.Max(0, sys.CoolantCooldown - delta * cdSpeed);
+            }
+
+            if (dbg.NoHeat)
+            {
+                sys.Heat = Math.Max(sys.Heat - 10f * delta, 0);
+                continue;
+            }
+
             float energyLevel = kvp.Key switch
             {
                 SystemId.Drive => ship.Energy.Drive,
                 SystemId.Shields => ship.Energy.Shields,
                 SystemId.Sensors => ship.Energy.Sensors,
-                _ => 33
+                SystemId.Weapons => ship.Energy.Weapons,
+                _ => 25
             };
 
             float heatGenRate = (energyLevel - 25f) * 0.15f;
@@ -218,10 +236,21 @@ public partial class MissionController : Node
             if (sys.Status != SystemStatus.Offline)
                 sys.Heat = Math.Clamp(sys.Heat + (heatGenRate - heatDissipation) * delta, 0, ShipSystem.MaxHeat);
 
-            if (sys.Heat >= ShipSystem.CriticalHeatThreshold && sys.Status == SystemStatus.Operational)
+            if (sys.Heat >= ShipSystem.MaxHeat && sys.Status != SystemStatus.Offline)
+            {
+                sys.Status = SystemStatus.Offline;
+                _state.Mission.Log.Add(new MissionLogEntry
+                {
+                    Timestamp = _state.Mission.ElapsedTime,
+                    Source = "System",
+                    Message = $"⚠ {kvp.Key} automatisch abgeschaltet (Überhitzung)"
+                });
+            }
+            else if (sys.Heat >= ShipSystem.CriticalHeatThreshold && sys.Status == SystemStatus.Operational)
+            {
                 sys.Status = SystemStatus.Degraded;
+            }
 
-            // Repair progress
             if (sys.IsRepairing && sys.Status != SystemStatus.Operational)
             {
                 sys.RepairProgress += 8f * delta;
@@ -242,22 +271,112 @@ public partial class MissionController : Node
         }
     }
 
+    private void UpdateSensorVisibility()
+    {
+        float sensorRange = ShipCalculations.CalculateSensorRange(_state.Ship, _state.ContactsState.ActiveSensors);
+        float elapsed = _state.Mission.ElapsedTime;
+        bool reveal = _state.Debug.RevealContacts;
+
+        foreach (var contact in _state.Contacts)
+        {
+            if (contact.PreRevealed) continue;
+            if (contact.Discovery == DiscoveryState.Scanned) continue;
+
+            if (reveal)
+            {
+                contact.Discovery = DiscoveryState.Detected;
+                continue;
+            }
+
+            float dx = contact.PositionX - _state.Ship.PositionX;
+            float dy = contact.PositionY - _state.Ship.PositionY;
+            float dist = MathF.Sqrt(dx * dx + dy * dy);
+
+            if (dist <= sensorRange)
+            {
+                contact.Discovery = DiscoveryState.Detected;
+            }
+            else if (contact.Discovery == DiscoveryState.Detected)
+            {
+                contact.Discovery = DiscoveryState.Hidden;
+            }
+            else if (contact.Discovery == DiscoveryState.Probed && elapsed >= contact.ProbeExpiry)
+            {
+                contact.Discovery = DiscoveryState.Hidden;
+                contact.IsScanning = false;
+            }
+        }
+    }
+
+    private void UpdateProbes(float delta)
+    {
+        var cs = _state.ContactsState;
+
+        for (int i = cs.ActiveProbes.Count - 1; i >= 0; i--)
+        {
+            cs.ActiveProbes[i].RemainingTime -= delta;
+            if (cs.ActiveProbes[i].RemainingTime <= 0)
+                cs.ActiveProbes.RemoveAt(i);
+        }
+
+        if (_state.Debug.InfiniteProbes)
+        {
+            cs.ProbeCharges = ContactsState.MaxProbeCharges;
+            return;
+        }
+
+        if (cs.ProbeCharges < ContactsState.MaxProbeCharges)
+        {
+            float energyMult = _state.Ship.Energy.Sensors / 25f;
+            float cdMult = _state.Debug.NoCooldowns ? 5f : 1f;
+            cs.ProbeRechargeTimer += delta * Math.Max(energyMult, 0.1f) * cdMult;
+            if (cs.ProbeRechargeTimer >= ContactsState.ProbeRechargeTime)
+            {
+                cs.ProbeRechargeTimer = 0;
+                cs.ProbeCharges++;
+            }
+        }
+    }
+
     private void UpdateScanning(float delta)
     {
-        float sensorEnergy = _state.Ship.Energy.Sensors / 33f;
+        bool instant = _state.Debug.InstantScans;
+        float sensorEnergy = _state.Ship.Energy.Sensors / 25f;
         float statusMult = ShipCalculations.GetScanStatusMultiplier(
             _state.Ship.Systems[SystemId.Sensors].Status);
-        float scanSpeed = 12f * sensorEnergy * statusMult;
+        float heatMult = _state.Ship.Systems[SystemId.Sensors].GetHeatEfficiencyMultiplier();
+        float activeMult = _state.ContactsState.ActiveSensors ? 1.5f : 1f;
+        float sensorRange = ShipCalculations.CalculateSensorRange(_state.Ship, _state.ContactsState.ActiveSensors);
 
         foreach (var contact in _state.Contacts)
         {
             if (!contact.IsScanning || contact.ScanProgress >= 100) continue;
+            if (contact.Discovery == DiscoveryState.Hidden)
+            {
+                contact.IsScanning = false;
+                continue;
+            }
 
-            contact.ScanProgress = Math.Clamp(contact.ScanProgress + scanSpeed * delta, 0, 100);
+            if (instant)
+            {
+                contact.ScanProgress = 100;
+            }
+            else
+            {
+                float dx = contact.PositionX - _state.Ship.PositionX;
+                float dy = contact.PositionY - _state.Ship.PositionY;
+                float distance = MathF.Sqrt(dx * dx + dy * dy);
+                float distanceFactor = Math.Clamp(sensorRange / (distance + 50f), 0.15f, 1.5f);
+
+                float scanSpeed = 12f * sensorEnergy * statusMult * heatMult * activeMult * distanceFactor;
+                contact.ScanProgress = Math.Clamp(contact.ScanProgress + scanSpeed * delta, 0, 100);
+            }
 
             if (contact.ScanProgress >= 100)
             {
                 contact.IsScanning = false;
+                contact.Discovery = DiscoveryState.Scanned;
+                contact.IsVisibleOnMainScreen = true;
                 ClassifyContact(contact);
             }
         }
@@ -307,6 +426,178 @@ public partial class MissionController : Node
         {
             contact.PositionX += contact.VelocityX * delta;
             contact.PositionY += contact.VelocityY * delta;
+            contact.PositionZ += contact.VelocityZ * delta;
+        }
+    }
+
+    private void UpdatePatrolDrone(float delta)
+    {
+        var drone = _state.Contacts.Find(c => c.Id == "patrol_drone");
+        if (drone == null) return;
+
+        float t = _state.Mission.ElapsedTime;
+        float angularSpeed = 0.15f;
+        float angle = t * angularSpeed;
+        drone.VelocityX = MathF.Cos(angle) * 8f;
+        drone.VelocityY = MathF.Sin(angle) * 8f;
+    }
+
+    private void UpdateWeaknessAnalysis(float delta)
+    {
+        bool instant = _state.Debug.InstantScans;
+        float sensorEnergy = _state.Ship.Energy.Sensors / 25f;
+        float statusMult = ShipCalculations.GetScanStatusMultiplier(
+            _state.Ship.Systems[SystemId.Sensors].Status);
+
+        foreach (var contact in _state.Contacts)
+        {
+            if (!contact.IsAnalyzing || contact.HasWeakness) continue;
+
+            if (instant)
+            {
+                contact.WeaknessAnalysisProgress = 100;
+            }
+            else
+            {
+                float dx = contact.PositionX - _state.Ship.PositionX;
+                float dy = contact.PositionY - _state.Ship.PositionY;
+                float distance = MathF.Sqrt(dx * dx + dy * dy);
+                float sensorRange = ShipCalculations.CalculateSensorRange(_state.Ship, _state.ContactsState.ActiveSensors);
+                float distanceFactor = Math.Clamp(sensorRange / (distance + 50f), 0.1f, 1.2f);
+
+                float analysisSpeed = 6f * sensorEnergy * statusMult * distanceFactor;
+                contact.WeaknessAnalysisProgress = Math.Clamp(
+                    contact.WeaknessAnalysisProgress + analysisSpeed * delta, 0, 100);
+            }
+
+            if (contact.WeaknessAnalysisProgress >= 100)
+            {
+                contact.IsAnalyzing = false;
+                contact.HasWeakness = true;
+                _state.Mission.Log.Add(new MissionLogEntry
+                {
+                    Timestamp = _state.Mission.ElapsedTime,
+                    Source = "Tactical",
+                    Message = $"Schwachstelle identifiziert: {contact.DisplayName} (+50% Schaden für Gunner)"
+                });
+            }
+        }
+    }
+
+    private void UpdateGunner(float delta)
+    {
+        var gunner = _state.Gunner;
+        var weaponSys = _state.Ship.Systems[SystemId.Weapons];
+        var dbg = _state.Debug;
+
+        if (gunner.FireCooldown > 0)
+        {
+            float cdMult = dbg.NoCooldowns ? 10f : 1f;
+            gunner.FireCooldown = Math.Max(0, gunner.FireCooldown - delta * cdMult);
+        }
+
+        if (!string.IsNullOrEmpty(gunner.SelectedTargetId) && gunner.TargetLockProgress < 100f)
+        {
+            var contact = _state.Contacts.Find(c => c.Id == gunner.SelectedTargetId);
+            if (contact == null || contact.IsDestroyed || contact.Discovery != DiscoveryState.Scanned)
+            {
+                gunner.SelectedTargetId = null;
+                gunner.TargetLockProgress = 0;
+                return;
+            }
+
+            if (weaponSys.Status == SystemStatus.Offline && !dbg.GodMode) return;
+
+            if (dbg.InstantLock)
+            {
+                gunner.TargetLockProgress = 100f;
+            }
+            else
+            {
+                float lockSpeed = ShipCalculations.CalculateTargetLockSpeed(_state.Ship);
+                float baseLockTime = gunner.Mode == WeaponMode.Precision
+                    ? GunnerState.PrecisionLockTime
+                    : GunnerState.BarrageLockTime;
+                float lockPerSecond = lockSpeed > 0 ? 100f / baseLockTime * lockSpeed : 0;
+                gunner.TargetLockProgress = Math.Clamp(gunner.TargetLockProgress + lockPerSecond * delta, 0, 100);
+            }
+        }
+
+        if (gunner.IsDefensiveMode && string.IsNullOrEmpty(gunner.SelectedTargetId))
+        {
+            var nearest = FindNearestHostile();
+            if (nearest != null)
+            {
+                gunner.SelectedTargetId = nearest.Id;
+                gunner.TargetLockProgress = 0;
+            }
+        }
+    }
+
+    private Contact? FindNearestHostile()
+    {
+        Contact? best = null;
+        float bestDist = float.MaxValue;
+        foreach (var c in _state.Contacts)
+        {
+            if (c.IsDestroyed || c.Discovery != DiscoveryState.Scanned) continue;
+            if (c.ThreatLevel < 7) continue;
+            float dx = c.PositionX - _state.Ship.PositionX;
+            float dy = c.PositionY - _state.Ship.PositionY;
+            float d = dx * dx + dy * dy;
+            if (d < bestDist) { bestDist = d; best = c; }
+        }
+        return best;
+    }
+
+    private void UpdateEnemyAttacks(float delta)
+    {
+        if (_state.Debug.Invulnerable) return;
+
+        float shieldAbsorption = ShipCalculations.CalculateShieldAbsorption(_state.Ship);
+        bool activeSensors = _state.ContactsState.ActiveSensors;
+
+        foreach (var contact in _state.Contacts)
+        {
+            if (contact.IsDestroyed || contact.Type != ContactType.Hostile) continue;
+            if (contact.AttackDamage <= 0) continue;
+
+            float dx = contact.PositionX - _state.Ship.PositionX;
+            float dy = contact.PositionY - _state.Ship.PositionY;
+            float dist = MathF.Sqrt(dx * dx + dy * dy);
+
+            float effectiveRange = contact.AttackRange;
+            if (activeSensors) effectiveRange *= 1.3f;
+
+            contact.IsTargetingPlayer = dist <= effectiveRange;
+
+            if (!contact.IsTargetingPlayer) continue;
+
+            contact.AttackCooldown -= delta;
+            if (contact.AttackCooldown > 0) continue;
+
+            contact.AttackCooldown = contact.AttackInterval;
+
+            float evasionMult = _state.Ship.FlightMode == FlightMode.Evasive ? 0.5f : 1f;
+            float engagementMult = _state.Engagement == EngagementRule.Defensive ? 0.8f : 1f;
+            float rawDamage = contact.AttackDamage * evasionMult * engagementMult * _damageMultiplier;
+
+            float absorbed = rawDamage * shieldAbsorption;
+            float hullDamage = rawDamage - absorbed;
+
+            _state.Ship.HullIntegrity = Math.Max(0, _state.Ship.HullIntegrity - hullDamage);
+
+            if (absorbed > 0)
+                _state.Ship.Systems[SystemId.Shields].Heat = Math.Clamp(
+                    _state.Ship.Systems[SystemId.Shields].Heat + absorbed * 0.5f, 0, ShipSystem.MaxHeat);
+
+            _state.Mission.Log.Add(new MissionLogEntry
+            {
+                Timestamp = _state.Mission.ElapsedTime,
+                Source = "System",
+                Message = $"Treffer von {contact.DisplayName}: {hullDamage:F0} Hüllenschaden" +
+                    (absorbed > 0 ? $" ({absorbed:F0} absorbiert)" : "")
+            });
         }
     }
 
@@ -315,16 +606,11 @@ public partial class MissionController : Node
         float t = _state.Mission.ElapsedTime;
         var currentPhase = _state.Mission.Phase;
 
-        float timeScale = _missionTimeout / DefaultMissionTimeout;
-        float p1 = DefaultPhase1End * timeScale;
-        float p2 = DefaultPhase2End * timeScale;
-        float p3 = DefaultPhase3End * timeScale;
-
-        if (currentPhase == MissionPhase.Anflug && t >= p1)
+        if (currentPhase == MissionPhase.Anflug && t >= DefaultPhase1End)
             TransitionToPhase(MissionPhase.Stoerung);
-        else if (currentPhase == MissionPhase.Stoerung && t >= p2)
+        else if (currentPhase == MissionPhase.Stoerung && t >= DefaultPhase2End)
             TransitionToPhase(MissionPhase.Krisenfenster);
-        else if (currentPhase == MissionPhase.Krisenfenster && t >= p3)
+        else if (currentPhase == MissionPhase.Krisenfenster && t >= DefaultPhase3End)
             TransitionToPhase(MissionPhase.Abschluss);
     }
 
@@ -332,7 +618,8 @@ public partial class MissionController : Node
     {
         _state.Mission.Phase = newPhase;
         _state.Mission.PhaseTimer = 0;
-        EmitSignal(SignalName.PhaseChanged, newPhase.ToString());
+        if (_state.Mission.UseStructuredMissionPhases)
+            EmitSignal(SignalName.PhaseChanged, newPhase.ToString());
 
         _state.Mission.Log.Add(new MissionLogEntry
         {
@@ -355,12 +642,11 @@ public partial class MissionController : Node
     private void CheckEvents()
     {
         float t = _state.Mission.ElapsedTime;
-        float timeScale = _missionTimeout / DefaultMissionTimeout;
 
         foreach (var (id, defaultTime) in EventSchedule)
         {
             if (_triggeredEvents.Contains(id)) continue;
-            if (t < defaultTime * timeScale) continue;
+            if (t < defaultTime) continue;
 
             bool shouldTrigger = _encounterConfig == null
                 || _encounterConfig.ForcedEvents.Contains(id);
@@ -504,22 +790,16 @@ public partial class MissionController : Node
         EmitSignal(SignalName.EventTriggered, "recovery_window");
     }
 
-    private void CheckEndConditions()
+    private void CheckEndConditions(float delta)
     {
-        float t = _state.Mission.ElapsedTime;
-
-        if (t >= _missionTimeout)
+        if (_state.Ship.HullIntegrity <= 0 && !_state.Debug.Invulnerable)
         {
-            EndMission("timeout");
+            EndMission(MissionResult.Destroyed);
             return;
         }
 
-        // Critical hull
-        if (_state.Ship.HullIntegrity <= 0)
-        {
-            EndMission("destroyed");
-            return;
-        }
+        if (_state.Debug.Invulnerable && _state.Ship.HullIntegrity < 1)
+            _state.Ship.HullIntegrity = 1;
 
         // Check recovery window completion
         var recoveryEvent = _state.ActiveEvents.Find(e => e.Id == "recovery_window");
@@ -530,34 +810,15 @@ public partial class MissionController : Node
             {
                 float dx = _state.Ship.PositionX - primaryTarget.PositionX;
                 float dy = _state.Ship.PositionY - primaryTarget.PositionY;
-                float dist = MathF.Sqrt(dx * dx + dy * dy);
+                float dz = _state.Ship.PositionZ - primaryTarget.PositionZ;
+                float dist = MathF.Sqrt(dx * dx + dy * dy + dz * dz);
 
                 if (dist < 50f && primaryTarget.ScanProgress >= 100)
                 {
                     _state.Mission.PrimaryObjective = ObjectiveStatus.Completed;
-                    EndMission("success");
+                    EndMission(MissionResult.Success);
                     return;
                 }
-            }
-        }
-
-        // Phase 4 auto-end
-        if (_state.Mission.Phase == MissionPhase.Abschluss && _state.Mission.PhaseTimer > 120f)
-        {
-            var target = _state.Contacts.Find(c => c.Id == "primary_target");
-            float dx = _state.Ship.PositionX - (target?.PositionX ?? 500);
-            float dy = _state.Ship.PositionY - (target?.PositionY ?? 500);
-            float dist = MathF.Sqrt(dx * dx + dy * dy);
-
-            if (dist < 100f)
-            {
-                _state.Mission.PrimaryObjective = ObjectiveStatus.Completed;
-                EndMission("partial");
-            }
-            else
-            {
-                _state.Mission.PrimaryObjective = ObjectiveStatus.Failed;
-                EndMission("failed");
             }
         }
 
@@ -567,7 +828,7 @@ public partial class MissionController : Node
             var evt = _state.ActiveEvents[i];
             // TimeRemaining is decremented here
             if (evt.TimeRemaining > 0)
-                evt.TimeRemaining -= (float)GetProcessDeltaTime();
+                evt.TimeRemaining -= delta;
 
             if (evt.TimeRemaining <= 0 && evt.IsActive)
             {
@@ -575,29 +836,49 @@ public partial class MissionController : Node
                 evt.IsResolved = true;
             }
         }
+
+        // Bergungsfenster zu Ende ohne Primärziel — intrinsisch ans Event gekoppelt, kein globales Limit
+        var recoveryExpired = _state.ActiveEvents.Find(e => e.Id == "recovery_window");
+        if (recoveryExpired is { IsActive: false, IsResolved: true }
+            && _state.Mission.PrimaryObjective == ObjectiveStatus.InProgress)
+        {
+            _state.Mission.PrimaryObjective = ObjectiveStatus.Failed;
+            EndMission(MissionResult.Failed);
+        }
     }
 
-    private void EndMission(string result)
+    public void DebugForceEndMission(MissionResult result)
+    {
+        if (!_state.MissionStarted) return;
+        if (_state.Mission.Phase == MissionPhase.Ended) return;
+
+        _state.Mission.PrimaryObjective = result is MissionResult.Success or MissionResult.Partial
+            ? ObjectiveStatus.Completed
+            : ObjectiveStatus.Failed;
+
+        EndMission(result);
+    }
+
+    private void EndMission(MissionResult result)
     {
         if (_state.Mission.Phase == MissionPhase.Ended) return;
 
         _state.Mission.Phase = MissionPhase.Ended;
         _state.MissionStarted = false;
 
-        // Evaluate secondary objective
         var unknownContact = _state.Contacts.Find(c => c.Id == "unknown_contact");
-        if (unknownContact != null && unknownContact.ScanProgress >= 100)
-            _state.Mission.SecondaryObjective = ObjectiveStatus.Completed;
-        else
-            _state.Mission.SecondaryObjective = ObjectiveStatus.Failed;
+        _state.Mission.SecondaryObjective =
+            unknownContact is { ScanProgress: >= 100 }
+                ? ObjectiveStatus.Completed
+                : ObjectiveStatus.Failed;
 
         string displayResult = result switch
         {
-            "success" => "Voller Erfolg! Primärziel gesichert.",
-            "partial" => "Teil-Erfolg. Primärziel teilweise erreicht.",
-            "failed" => "Fehlschlag. Primärziel nicht erreicht.",
-            "timeout" => "Zeitüberschreitung. Mission abgebrochen.",
-            "destroyed" => "Schiff zerstört. Mission gescheitert.",
+            MissionResult.Success => "Voller Erfolg! Primärziel gesichert.",
+            MissionResult.Partial => "Teil-Erfolg. Primärziel teilweise erreicht.",
+            MissionResult.Failed => "Fehlschlag. Primärziel nicht erreicht.",
+            MissionResult.Timeout => "Zeitüberschreitung. Mission abgebrochen.",
+            MissionResult.Destroyed => "Schiff zerstört. Mission gescheitert.",
             _ => "Mission beendet."
         };
 
@@ -608,7 +889,7 @@ public partial class MissionController : Node
             Message = $"Mission beendet: {displayResult}"
         });
 
-        EmitSignal(SignalName.MissionEnded, result);
+        EmitSignal(SignalName.MissionEnded, (int)result);
         GD.Print($"[Mission] Ended: {result}");
     }
 
@@ -621,6 +902,8 @@ public partial class MissionController : Node
 
     public void SetPhaseManually(MissionPhase phase)
     {
+        _useStructuredPhases = true;
+        _state.Mission.UseStructuredMissionPhases = true;
         TransitionToPhase(phase);
     }
 
@@ -628,14 +911,19 @@ public partial class MissionController : Node
     {
         _triggeredEvents.Clear();
         _encounterConfig = null;
-        _missionTimeout = DefaultMissionTimeout;
+        _useStructuredPhases = false;
         _damageMultiplier = 1f;
         _state.ActiveEvents.Clear();
         _state.Overlays.Clear();
         _state.Contacts.Clear();
+        _state.ContactsState.ActiveProbes.Clear();
+        _state.ContactsState.ProbeCharges = 3;
+        _state.ContactsState.ProbeRechargeTimer = 0;
+        _state.ContactsState.ActiveSensors = false;
         _state.Mission = new MissionState();
         _state.Ship = new ShipState();
         _state.Route = new RouteState();
+        _state.Gunner = new GunnerState();
         _state.MissionStarted = false;
         _state.IsPaused = false;
     }

@@ -107,6 +107,9 @@ class SpacedOutClient {
             case 'sector_map_update':
                 this.emit('sector_map_update', msg);
                 break;
+            case 'run_state_update':
+                this.emit('run_state_update', msg);
+                break;
             case 'campaign_node_completed':
                 this.showToast(`Knoten abgeschlossen`, 'info');
                 this.emit('campaign_node_completed', msg);
@@ -201,6 +204,18 @@ function formatTime(seconds) {
     const m = Math.floor(seconds / 60);
     const s = Math.floor(seconds % 60);
     return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+/** Main screen shows mission title in sandbox mode; structured missions show phase name. */
+function updatePhaseHeaderFromState(msg) {
+    const el = document.getElementById('phase-display');
+    if (!el) return;
+    if (msg.mission_phase === 'Ended') {
+        el.textContent = 'BEENDET';
+        return;
+    }
+    const structured = msg.use_structured_phases === true;
+    el.textContent = structured ? (msg.mission_phase || '---') : (msg.mission_title || 'EINSATZ');
 }
 
 function getStatusClass(status) {

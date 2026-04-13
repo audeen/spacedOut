@@ -1,11 +1,13 @@
 <!DOCTYPE html>
 <html lang="de">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>SpacedOut - Navigator</title>
+    <title>SpacedOut - Kommandant</title>
     <link rel="stylesheet" href="css/style.css">
 </head>
+
 <body>
     <div class="paused-overlay hidden" id="paused-overlay">PAUSIERT</div>
     <div class="mission-end-overlay hidden" id="mission-end">
@@ -13,9 +15,18 @@
         <div class="mission-end-detail" id="mission-end-detail"></div>
     </div>
 
+    <div class="briefing-overlay hidden" id="briefing-overlay"
+        style="position:fixed;inset:0;background:rgba(5,8,18,0.95);z-index:1000;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;">
+        <div style="max-width:500px;text-align:center;">
+            <div style="font-size:20px;font-weight:700;color:var(--cyan);margin-bottom:12px;">MISSIONSBRIEFING</div>
+            <div id="briefing-text" style="font-size:15px;line-height:1.6;color:var(--text);margin-bottom:20px;"></div>
+            <button class="btn btn-primary" onclick="dismissBriefing()">Verstanden</button>
+        </div>
+    </div>
+
     <div class="header">
         <div>
-            <div class="header-title">Navigator</div>
+            <div class="header-title">Kommandant</div>
             <div class="header-status" id="connection-status">Verbinde...</div>
         </div>
         <div style="text-align: right;">
@@ -24,21 +35,22 @@
         </div>
     </div>
 
-    <!-- Sector Map Overlay (shown between missions) -->
-    <div class="sector-map-overlay hidden" id="sector-map-overlay">
+    <!-- Run Map Overlay (shown between missions / transit) -->
+    <div class="sector-map-overlay hidden" id="run-map-overlay">
         <div class="sector-map-header">
             <div>
-                <div class="sector-map-title" id="sector-title">SEKTORKARTE</div>
-                <div class="sector-map-subtitle" id="sector-subtitle">Wähle den nächsten Kurs</div>
+                <div class="sector-map-title" id="run-map-title">EINSATZPLANUNG</div>
+                <div class="sector-map-subtitle" id="run-map-subtitle">Wähle den nächsten Einsatz</div>
             </div>
             <div class="sector-map-resources">
-                <span class="resource-item" id="resource-hull">Hull: 100%</span>
-                <span class="resource-item" id="resource-fuel">Fuel: 10</span>
-                <span class="resource-item" id="resource-scrap">Scrap: 0</span>
+                <span class="resource-item" id="resource-hull">Hull: 10</span>
+                <span class="resource-item" id="resource-parts">Ersatzteile: 0</span>
+                <span class="resource-item" id="resource-ammo">Munition: 0</span>
+                <span class="resource-item" id="resource-data">Daten: 0</span>
             </div>
         </div>
         <div class="sector-map-canvas-container">
-            <canvas id="sector-map-canvas"></canvas>
+            <canvas id="run-map-canvas"></canvas>
         </div>
         <div class="sector-map-node-info hidden" id="node-info-panel">
             <div class="node-info-title" id="node-info-title"></div>
@@ -63,9 +75,31 @@
                 </div>
                 <div class="map-info-overlay" id="map-info">Zoom: 1.0x</div>
             </div>
-            <div class="text-dim mt-4" style="font-size:11px; padding:0 6px;">
-                Tippe = Waypoint setzen · Ziehen = Karte bewegen
+            <div style="padding:4px 6px; display:flex; align-items:center; gap:8px;">
+                <span class="text-dim" style="font-size:11px; white-space:nowrap;">WP Altitude:</span>
+                <input type="range" id="wp-altitude" min="0" max="1000" value="500" step="10"
+                    style="flex:1; accent-color: var(--cyan);"
+                    oninput="document.getElementById('wp-alt-value').textContent = (this.value - 500 >= 0 ? '+' : '') + (this.value - 500)">
+                <span id="wp-alt-value" class="text-cyan"
+                    style="font-size:12px; min-width:36px; text-align:right;">+0</span>
             </div>
+            <div class="text-dim mt-4" style="font-size:11px; padding:0 6px;">
+                Tippen auf Kontakt = Auswählen · Tippen auf Karte = Wegpunkt · Ziehen = Bewegen · Lang drücken = WP
+                entfernen
+            </div>
+        </div>
+
+        <!-- Contact Info (shown when contact selected) -->
+        <div class="panel" id="nav-contact-panel" style="display:none; border-left: 2px solid var(--cyan);">
+            <div class="panel-title" style="display:flex; justify-content:space-between; align-items:center;">
+                <span id="nav-contact-title">---</span>
+                <button class="btn btn-sm" onclick="deselectNavContact()"
+                    style="font-size:11px; padding:2px 8px;">✕</button>
+            </div>
+            <div id="nav-contact-details" style="font-size:13px; line-height:1.6;"></div>
+            <button class="btn btn-primary btn-block mt-8" id="nav-target-btn" onclick="setContactAsTarget()">
+                Ziel setzen
+            </button>
         </div>
 
         <!-- Flight Status -->
@@ -74,6 +108,10 @@
             <div class="status-row">
                 <span class="status-label">Position</span>
                 <span class="status-value" id="position-display" style="font-size:16px;">0, 0</span>
+            </div>
+            <div class="status-row">
+                <span class="status-label">Altitude</span>
+                <span class="status-value" id="altitude-display" style="font-size:16px; color: var(--cyan);">+0</span>
             </div>
             <div class="status-row">
                 <span class="status-label">Geschwindigkeit</span>
@@ -139,9 +177,85 @@
                 <span id="risk-display" class="status-value" style="font-size:16px;">0</span>
             </div>
         </div>
+
+        <!-- Hull & Systems -->
+        <div class="panel">
+            <div class="panel-title">Schiffsstatus</div>
+            <div class="status-row">
+                <span class="status-label">Hülle</span>
+                <span class="status-value text-green" id="hull-value">100%</span>
+            </div>
+            <div class="progress-bar progress-green" style="height:6px;">
+                <div class="progress-fill" id="hull-bar" style="width:100%"></div>
+            </div>
+            <div id="systems-summary" style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;"></div>
+        </div>
+
+        <!-- Engagement Rules -->
+        <div class="panel">
+            <div class="panel-title">Einsatzregeln</div>
+            <div class="btn-grid btn-grid-3" id="engagement-buttons">
+                <button class="btn" data-rule="Aggressive" onclick="setEngagementRule('Aggressive')">Aggressiv</button>
+                <button class="btn btn-primary" data-rule="Standard"
+                    onclick="setEngagementRule('Standard')">Standard</button>
+                <button class="btn" data-rule="Defensive" onclick="setEngagementRule('Defensive')">Defensiv</button>
+            </div>
+            <div class="mt-4 text-dim" style="font-size:13px;">Aktuell: <strong id="current-engagement-rule"
+                    class="text-cyan">STANDARD</strong></div>
+        </div>
+
+        <!-- Decisions -->
+        <div class="panel" id="decisions-panel" style="display:none; border-left:3px solid var(--red);">
+            <div class="panel-title text-red">⚠ Ausstehende Entscheidungen</div>
+            <div id="decisions-container"></div>
+        </div>
+
+        <!-- Crew Overlays -->
+        <div class="panel" id="overlays-panel" style="display:none; border-left:3px solid var(--yellow);">
+            <div class="panel-title">Crew-Anfragen</div>
+            <div id="overlays-container"></div>
+        </div>
+
+        <!-- Events -->
+        <div class="panel" id="captain-events-panel" style="display:none;">
+            <div class="panel-title">Aktive Ereignisse</div>
+            <div id="captain-events-container"></div>
+        </div>
+
+        <!-- Actions -->
+        <div class="panel">
+            <div class="panel-title">Aktionen</div>
+            <div class="btn-grid btn-grid-2">
+                <button class="btn" onclick="requestStatus('engineering')">Status: Technik</button>
+                <button class="btn" onclick="requestStatus('tactical')">Status: Taktik</button>
+                <button class="btn" onclick="requestStatus('gunner')">Status: Gunner</button>
+                <button class="btn btn-primary" onclick="requestStatus('all')">Lagebericht</button>
+            </div>
+        </div>
+
+        <!-- Log -->
+        <div class="panel">
+            <div class="panel-title">Missionslog</div>
+            <div style="display:flex; gap:4px; flex-wrap:wrap; margin-bottom:8px;">
+                <button class="btn btn-sm log-filter-btn active" data-filter="all"
+                    onclick="setLogFilter('all')">Alle</button>
+                <button class="btn btn-sm log-filter-btn" data-filter="System"
+                    onclick="setLogFilter('System')">System</button>
+                <button class="btn btn-sm log-filter-btn" data-filter="CaptainNav"
+                    onclick="setLogFilter('CaptainNav')">Kommandant</button>
+                <button class="btn btn-sm log-filter-btn" data-filter="Engineer"
+                    onclick="setLogFilter('Engineer')">Technik</button>
+                <button class="btn btn-sm log-filter-btn" data-filter="Tactical"
+                    onclick="setLogFilter('Tactical')">Taktik</button>
+                <button class="btn btn-sm log-filter-btn" data-filter="Gunner"
+                    onclick="setLogFilter('Gunner')">Gunner</button>
+            </div>
+            <div id="log-container" class="log-container" style="max-height:200px; overflow-y:auto;"></div>
+        </div>
     </div>
 
     <script src="js/client.js"></script>
     <script src="js/navigator.js"></script>
 </body>
+
 </html>

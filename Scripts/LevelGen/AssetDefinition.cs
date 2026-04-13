@@ -1,4 +1,5 @@
 using Godot;
+using SpacedOut.Sector;
 
 namespace SpacedOut.LevelGen;
 
@@ -47,4 +48,13 @@ public class AssetDefinition
     public string? ScenePath { get; init; }
     public float MinScale { get; init; } = 1f;
     public float MaxScale { get; init; } = 1f;
+
+    /// <summary>How this asset appears on 2D maps. Overrides automatic category-based resolution.</summary>
+    public MapPresence DefaultMapPresence { get; init; } = MapPresence.None;
+
+    /// <summary>Map icon color override (defaults to DebugColor if null).</summary>
+    public Color? MapColor { get; init; }
+
+    /// <summary>3D marker style for entities that have no physical mesh (signals, contacts).</summary>
+    public MarkerVisualType MarkerVisual { get; init; } = MarkerVisualType.None;
 }
