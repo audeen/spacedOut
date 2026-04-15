@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Godot;
 using SpacedOut.Shared;
@@ -12,6 +13,7 @@ namespace SpacedOut.MainScreen;
 public class MissionInfoPanel
 {
     private VBoxContainer _overlayContainer = null!;
+    private VBoxContainer _pinnedContainer = null!;
     private VBoxContainer _eventContainer = null!;
     private VBoxContainer _contactsContainer = null!;
     private Label _statusLine = null!;
@@ -31,7 +33,7 @@ public class MissionInfoPanel
     {
         var overlayPanel = UI.CreatePanel(TC.PanelBg);
         overlayPanel.Position = new Vector2(20, 100);
-        overlayPanel.Size = new Vector2(380, 300);
+        overlayPanel.Size = new Vector2(380, 420);
         overlayPanel.Visible = false;
         overlayPanel.Name = "OverlayPanel";
         _parent.AddChild(overlayPanel);
@@ -40,9 +42,21 @@ public class MissionInfoPanel
         overlayTitle.Position = new Vector2(10, 5);
         overlayPanel.AddChild(overlayTitle);
 
-        _overlayContainer = new VBoxContainer { Position = new Vector2(10, 30) };
+        var overlayColumn = new VBoxContainer
+        {
+            Position = new Vector2(10, 28),
+            Size = new Vector2(360, 380),
+        };
+        overlayColumn.AddThemeConstantOverride("separation", 8);
+        overlayPanel.AddChild(overlayColumn);
+
+        _overlayContainer = new VBoxContainer();
         _overlayContainer.AddThemeConstantOverride("separation", 4);
-        overlayPanel.AddChild(_overlayContainer);
+        overlayColumn.AddChild(_overlayContainer);
+
+        _pinnedContainer = new VBoxContainer();
+        _pinnedContainer.AddThemeConstantOverride("separation", 6);
+        overlayColumn.AddChild(_pinnedContainer);
 
         var eventPanel = UI.CreatePanel(TC.PanelBg);
         eventPanel.AnchorLeft = 1; eventPanel.AnchorRight = 1;
@@ -117,6 +131,8 @@ public class MissionInfoPanel
         }
         UpdatePhaseBanner(delta);
         UpdateOverlays(state);
+        UpdatePinnedContactCards(state);
+        RefreshCrewOverlayPanelVisibility(state);
         UpdateEvents(state);
         UpdateContacts(state);
         UpdateStatusLine(state);
@@ -153,13 +169,10 @@ public class MissionInfoPanel
 
     private void UpdateOverlays(GameState state)
     {
-        var panel = _parent.GetNode<PanelContainer>("OverlayPanel");
-        var approved = state.Overlays.FindAll(o => o.ApprovedByCaptain && !o.Dismissed).Take(3).ToList();
-        panel.Visible = approved.Count > 0;
-
         foreach (var child in _overlayContainer.GetChildren())
             child.QueueFree();
 
+        var approved = state.Overlays.FindAll(o => o.ApprovedByCaptain && !o.Dismissed).Take(3).ToList();
         foreach (var overlay in approved)
         {
             var color = overlay.Category switch
@@ -174,6 +187,88 @@ public class MissionInfoPanel
             lbl.CustomMinimumSize = new Vector2(350, 0);
             _overlayContainer.AddChild(lbl);
         }
+    }
+
+    private void RefreshCrewOverlayPanelVisibility(GameState state)
+    {
+        var panel = _parent.GetNode<PanelContainer>("OverlayPanel");
+        int overlayCount = state.Overlays.FindAll(o => o.ApprovedByCaptain && !o.Dismissed).Count;
+        panel.Visible = overlayCount > 0 || state.PinnedEntities.Count > 0;
+    }
+
+    private void UpdatePinnedContactCards(GameState state)
+    {
+        foreach (var child in _pinnedContainer.GetChildren())
+            child.QueueFree();
+
+        foreach (var pin in state.PinnedEntities)
+        {
+            var contact = state.Contacts.Find(c => c.Id == pin.EntityId);
+            _pinnedContainer.AddChild(BuildPinCard(pin, contact, state));
+        }
+    }
+
+    private static Control BuildPinCard(PinnedEntity pin, Contact? contact, GameState state)
+    {
+        var typeColor = contact != null
+            ? ThemeColors.GetContactColor(contact.Type)
+            : ThemeColors.ContactUnknown;
+
+        var card = new PanelContainer { CustomMinimumSize = new Vector2(350, 58) };
+        var cardStyle = new StyleBoxFlat
+        {
+            BgColor = new Color(0.04f, 0.06f, 0.12f, 0.85f),
+            BorderColor = new Color(TC.Cyan, 0.45f),
+            BorderWidthLeft = 1,
+            BorderWidthRight = 1,
+            BorderWidthTop = 1,
+            BorderWidthBottom = 1,
+            CornerRadiusTopLeft = 3,
+            CornerRadiusTopRight = 3,
+            CornerRadiusBottomLeft = 3,
+            CornerRadiusBottomRight = 3,
+            ContentMarginLeft = 10,
+            ContentMarginRight = 10,
+            ContentMarginTop = 8,
+            ContentMarginBottom = 8,
+        };
+        card.AddThemeStyleboxOverride("panel", cardStyle);
+
+        var row = new HBoxContainer();
+        card.AddChild(row);
+
+        row.AddChild(new ColorRect
+        {
+            Color = typeColor,
+            CustomMinimumSize = new Vector2(10, 10),
+        });
+
+        var textCol = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
+        row.AddChild(textCol);
+
+        string name = !string.IsNullOrEmpty(pin.Label) ? pin.Label : contact?.DisplayName ?? pin.EntityId;
+        textCol.AddChild(UI.CreateLabel(name, 12, new Color(0.75f, 0.78f, 0.85f, 0.9f)));
+        textCol.AddChild(UI.CreateLabel(pin.Detail, 10, new Color(0.5f, 0.5f, 0.55f, 0.7f)));
+
+        float dist = CalculatePinDistance(contact, state);
+        if (dist >= 0)
+        {
+            var distLbl = UI.CreateLabel($"{dist:F0}", 10, TC.Cyan with { A = 0.8f });
+            distLbl.HorizontalAlignment = HorizontalAlignment.Right;
+            distLbl.CustomMinimumSize = new Vector2(40, 0);
+            row.AddChild(distLbl);
+        }
+
+        return card;
+    }
+
+    private static float CalculatePinDistance(Contact? contact, GameState state)
+    {
+        if (contact == null) return -1;
+        float dx = contact.PositionX - state.Ship.PositionX;
+        float dy = contact.PositionY - state.Ship.PositionY;
+        float dz = contact.PositionZ - state.Ship.PositionZ;
+        return MathF.Sqrt(dx * dx + dy * dy + dz * dz);
     }
 
     private void UpdateEvents(GameState state)
@@ -206,7 +301,9 @@ public class MissionInfoPanel
     private void UpdateContacts(GameState state)
     {
         var panel = _parent.GetNode<PanelContainer>("ContactsPanel");
-        var visible = state.Contacts.FindAll(c => c.IsVisibleOnMainScreen);
+        var pinnedIds = new HashSet<string>(state.PinnedEntities.Select(p => p.EntityId));
+        var visible = state.Contacts.FindAll(c =>
+            c.IsVisibleOnMainScreen && !pinnedIds.Contains(c.Id));
         panel.Visible = visible.Count > 0;
 
         foreach (var child in _contactsContainer.GetChildren())

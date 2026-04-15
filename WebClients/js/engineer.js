@@ -62,6 +62,8 @@ client.onState((msg) => {
 
     const sparesEl = document.getElementById('spare-parts-display');
     if (sparesEl) sparesEl.textContent = d.spare_parts ?? 0;
+
+    updatePoiExtractPanel(d.poi_contacts || [], d.ship_x ?? 0, d.ship_y ?? 0);
 });
 
 client.on('paused', () => document.getElementById('paused-overlay').classList.remove('hidden'));
@@ -376,6 +378,149 @@ function overchargeSystem(system) {
 function convertSparesToAmmo() {
     client.sendCommand('ConvertSparesToAmmo', {});
     client.showToast('Ersatzteile zu Munition konvertiert', 'info');
+}
+
+function updatePoiExtractPanel(poiContacts, shipX, shipY) {
+    const panel = document.getElementById('poi-extract-panel');
+    const info = document.getElementById('poi-extract-info');
+    if (!panel || !info) return;
+
+    if (poiContacts.length === 0) {
+        panel.style.display = 'none';
+        info.replaceChildren();
+        return;
+    }
+
+    panel.style.display = '';
+
+    const activeIds = new Set(poiContacts.map((c) => c.Id));
+    info.querySelectorAll('[data-poi-row]').forEach((el) => {
+        if (!activeIds.has(el.dataset.poiRow)) el.remove();
+    });
+
+    let anyRow = false;
+
+    poiContacts.forEach((c) => {
+        const dx = c.PositionX - shipX;
+        const dy = c.PositionY - shipY;
+        const dist = Math.round(Math.sqrt(dx * dx + dy * dy));
+        const phase = c.PoiPhase || 'None';
+        const id = c.Id;
+        const escId = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(id) : id.replace(/"/g, '');
+
+        if (phase === 'Extracting') {
+            anyRow = true;
+            let row = info.querySelector(`[data-poi-row="${escId}"]`);
+            const progress = Math.round(c.PoiProgress || 0);
+            if (!row || row.dataset.poiMode !== 'extracting') {
+                if (row) row.remove();
+                row = document.createElement('div');
+                row.dataset.poiRow = id;
+                row.dataset.poiMode = 'extracting';
+                row.style.marginBottom = '8px';
+                row.innerHTML = `
+                    <div class="poi-extract-title" style="font-size:14px;font-weight:600;color:var(--green);"></div>
+                    <div class="progress-bar progress-green" style="height:6px;margin-top:4px;">
+                        <div class="progress-fill poi-extract-progress-fill" style="width:0%"></div>
+                    </div>
+                    <div class="text-dim poi-extract-pct mt-4" style="font-size:12px;"></div>`;
+                row.querySelector('.poi-extract-title').textContent = `Extraktion: ${c.DisplayName || ''}`;
+                info.appendChild(row);
+            }
+            const fill = row.querySelector('.poi-extract-progress-fill');
+            const pctEl = row.querySelector('.poi-extract-pct');
+            if (fill) fill.style.width = `${progress}%`;
+            if (pctEl) pctEl.textContent = `${progress}% · Dist: ${dist}`;
+            return;
+        }
+
+        if (phase === 'Analyzed' || phase === 'Opened') {
+            anyRow = true;
+            let row = info.querySelector(`[data-poi-row="${escId}"]`);
+            const ut = c.UsesTractorBeam;
+            const legacyBoth = ut === undefined;
+
+            if (!row || row.dataset.poiMode !== 'actions') {
+                if (row) row.remove();
+                row = document.createElement('div');
+                row.dataset.poiRow = id;
+                row.dataset.poiMode = 'actions';
+                row.style.marginBottom = '8px';
+
+                const title = document.createElement('div');
+                title.style.fontSize = '13px';
+                title.style.fontWeight = '600';
+                const nameSpan = document.createElement('span');
+                nameSpan.textContent = c.DisplayName || '';
+                const distSpan = document.createElement('span');
+                distSpan.className = 'text-dim poi-extract-dist';
+                distSpan.textContent = ` (Dist: ${dist})`;
+                title.appendChild(nameSpan);
+                title.appendChild(distSpan);
+
+                const grid = document.createElement('div');
+                grid.className = 'btn-grid btn-grid-2';
+                grid.style.marginTop = '4px';
+
+                const addTractor = () => {
+                    const b = document.createElement('button');
+                    b.type = 'button';
+                    b.className = 'btn btn-success btn-sm';
+                    b.textContent = 'Traktorstrahl';
+                    b.addEventListener('click', () => activateTractor(id));
+                    grid.appendChild(b);
+                };
+                const addExtract = () => {
+                    const b = document.createElement('button');
+                    b.type = 'button';
+                    b.className = 'btn btn-primary btn-sm';
+                    b.textContent = 'Extraktion';
+                    b.addEventListener('click', () => extractResource(id));
+                    grid.appendChild(b);
+                };
+
+                if (legacyBoth) {
+                    addTractor();
+                    addExtract();
+                } else if (ut === true) {
+                    addTractor();
+                } else {
+                    addExtract();
+                }
+
+                row.appendChild(title);
+                row.appendChild(grid);
+                info.appendChild(row);
+            } else {
+                const distSpan = row.querySelector('.poi-extract-dist');
+                if (distSpan) distSpan.textContent = ` (Dist: ${dist})`;
+            }
+        }
+    });
+
+    if (!anyRow) {
+        if (!info.querySelector('.poi-wait-placeholder')) {
+            info.replaceChildren();
+            const wait = document.createElement('div');
+            wait.className = 'text-dim poi-wait-placeholder';
+            wait.style.textAlign = 'center';
+            wait.textContent = 'Warte auf Gunner/Tactical...';
+            info.appendChild(wait);
+        }
+    } else {
+        const wait = info.querySelector('.poi-wait-placeholder');
+        if (wait) wait.remove();
+    }
+}
+
+function activateTractor(contactId) {
+    client.sendCommand('ActivateTractor', { contact_id: contactId });
+    client.showToast('Traktorstrahl aktiviert', 'info');
+}
+
+function extractResource(contactId) {
+    client.sendCommand('ExtractResource', { contact_id: contactId });
+    client.showToast('Extraktion gestartet', 'info');
 }
 
 client.connect();

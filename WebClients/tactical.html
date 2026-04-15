@@ -1,11 +1,13 @@
 <!DOCTYPE html>
 <html lang="de">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>SpacedOut - Tactical</title>
     <link rel="stylesheet" href="css/style.css">
 </head>
+
 <body>
     <div class="paused-overlay hidden" id="paused-overlay">PAUSIERT</div>
     <div class="mission-end-overlay hidden" id="mission-end">
@@ -46,8 +48,10 @@
         <div class="panel">
             <div class="panel-title">Sensormodus</div>
             <div class="btn-grid btn-grid-2" id="sensor-mode-buttons">
-                <button class="btn btn-primary" id="sensor-passive-btn" onclick="setSensorMode('passive')">Passiv</button>
-                <button class="btn btn-danger" id="sensor-active-btn" onclick="setSensorMode('active')">Aktiv (+50%)</button>
+                <button class="btn btn-primary" id="sensor-passive-btn"
+                    onclick="setSensorMode('passive')">Passiv</button>
+                <button class="btn btn-danger" id="sensor-active-btn" onclick="setSensorMode('active')">Aktiv
+                    (+50%)</button>
             </div>
             <div class="text-dim mt-4" style="font-size:11px;">
                 Aktiv: +50% Reichweite & Scan-Speed, aber Feinde erkennen unsere Position.
@@ -63,34 +67,7 @@
         <!-- Actions for selected contact (ABOVE map) -->
         <div class="panel" id="contact-actions" style="display:none;">
             <div class="panel-title">Kontakt-Aktionen: <span id="selected-contact-name"></span></div>
-            <div class="btn-grid" style="grid-template-columns: 1fr;">
-                <button class="btn btn-primary btn-block" id="scan-btn" onclick="scanSelected()">
-                    Scannen
-                </button>
-                <button class="btn btn-block" id="release-nav-btn" onclick="releaseToNavigator()" style="display:none;">
-                    Für Kommandant freigeben
-                </button>
-                <button class="btn btn-primary btn-block" onclick="markSelected()">
-                    Auf Hauptschirm markieren
-                </button>
-                <button class="btn btn-danger btn-block" id="designate-btn" onclick="designateTarget()" style="display:none;">
-                    Ziel designieren (+25% DMG)
-                </button>
-                <button class="btn btn-warning btn-block" id="analyze-btn" onclick="analyzeWeakness()" style="display:none;">
-                    Schwachstelle analysieren (+50% DMG)
-                </button>
-                <div class="slider-group">
-                    <div class="slider-label">
-                        <span>Bedrohungsstufe</span>
-                        <span class="slider-value" id="threat-value">5</span>
-                    </div>
-                    <input type="range" id="threat-slider" min="0" max="10" value="5"
-                           oninput="document.getElementById('threat-value').textContent = this.value">
-                </div>
-                <button class="btn btn-warning btn-block" onclick="setThreatLevel()">
-                    Bedrohungsstufe setzen
-                </button>
-            </div>
+            <div id="action-buttons-container" class="action-grid"></div>
         </div>
 
         <!-- Tactical Map -->
@@ -156,4 +133,5 @@
     <script src="js/client.js"></script>
     <script src="js/tactical.js"></script>
 </body>
+
 </html>

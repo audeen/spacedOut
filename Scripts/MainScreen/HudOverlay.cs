@@ -20,13 +20,13 @@ public partial class HudOverlay : Control
 
     private ShipStatusPanel _shipPanel = null!;
     private MissionInfoPanel _missionPanel = null!;
+    private MissionLogPanel _missionLogPanel = null!;
     private HudDebugPanel _debugPanel = null!;
     private RunPanel _runPanel = null!;
 
     private StarMapDisplay _starMapDisplay = null!;
     private TacticalDisplay _tacticalDisplay = null!;
     private RunMapDisplay _runMapDisplay = null!;
-    private PinnedInfoPanel _pinnedPanel = null!;
 
     public void Initialize(GameState state)
     {
@@ -51,22 +51,15 @@ public partial class HudOverlay : Control
         _missionPanel = new MissionInfoPanel(this);
         _missionPanel.Build();
 
+        _missionLogPanel = new MissionLogPanel(this);
+        _missionLogPanel.Build();
+
         BuildStationDisplays();
 
         _runPanel = new RunPanel(this, _runMapDisplay,
             () => EmitSignal(SignalName.RunEnterPressed),
             res => EmitSignal(SignalName.RunResolvePressed, res));
         _runPanel.Build();
-
-        _pinnedPanel = new PinnedInfoPanel
-        {
-            Name = "PinnedInfoPanel",
-            AnchorLeft = 1f, AnchorTop = 1f,
-            AnchorRight = 1f, AnchorBottom = 1f,
-            Position = new Vector2(-240, -210),
-            Size = new Vector2(220, 200),
-        };
-        AddChild(_pinnedPanel);
 
         _debugPanel = new HudDebugPanel(this,
             cmd => EmitSignal(SignalName.DebugCommand, cmd),
@@ -129,6 +122,7 @@ public partial class HudOverlay : Control
         float delta = (float)GetProcessDeltaTime();
         _shipPanel.Update(state);
         _missionPanel.Update(state, delta);
+        _missionLogPanel.Update(state);
         UpdateStationDisplays(state);
         _debugPanel.UpdateGodmodeStatus();
 
@@ -156,8 +150,6 @@ public partial class HudOverlay : Control
             _tacticalDisplay.UpdateState(state);
             _tacticalDisplay.UpdatePinnedIds(pinnedIds);
         }
-
-        _pinnedPanel.UpdateState(state, _sector);
 
         _runMapDisplay.Visible = runMapActive;
         _runPanel.UpdateVisibility(runMapActive);

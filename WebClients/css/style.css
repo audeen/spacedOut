@@ -191,6 +191,26 @@ body {
 .btn-grid-2 { grid-template-columns: 1fr 1fr; }
 .btn-grid-3 { grid-template-columns: 1fr 1fr 1fr; }
 
+/* Dynamic action grid */
+.action-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.action-row {
+    display: grid;
+    gap: 8px;
+    grid-template-columns: 1fr;
+}
+.action-row-2 { grid-template-columns: 1fr 1fr; }
+.action-row-3 { grid-template-columns: 1fr 1fr 1fr; }
+.action-slider-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    grid-column: 1 / -1;
+}
+
 /* Status indicators */
 .status-value {
     font-size: 28px;
@@ -529,6 +549,47 @@ input[type="range"]::-webkit-slider-thumb {
 @keyframes toastOut {
     from { opacity: 1; }
     to { opacity: 0; }
+}
+
+/* Gunner: shot feedback from bottom (snackbar) */
+.toast-container.toast-container--bottom {
+    top: auto;
+    bottom: max(16px, env(safe-area-inset-bottom, 0px));
+    left: 50%;
+    transform: translateX(-50%);
+    flex-direction: column-reverse;
+}
+.toast.toast--from-bottom {
+    animation: toastInBottom 0.28s ease forwards;
+    min-width: min(92vw, 360px);
+    text-align: center;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.45);
+}
+/* Override default .toast timed fade so exit is controlled in JS */
+.toast.toast--from-bottom.toast--fade-out {
+    animation: toastFadeBottom 0.32s ease forwards;
+}
+@keyframes toastInBottom {
+    from { opacity: 0; transform: translateY(18px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+@keyframes toastFadeBottom {
+    from { opacity: 1; }
+    to { opacity: 0; transform: translateY(8px); }
+}
+.toast--shot-miss {
+    border-color: var(--yellow) !important;
+    color: var(--yellow);
+}
+.toast--shot-hit {
+    border-color: var(--cyan) !important;
+    color: var(--cyan);
+}
+.toast--shot-kill {
+    border-color: var(--green) !important;
+    color: var(--green);
 }
 
 /* Briefing overlay */

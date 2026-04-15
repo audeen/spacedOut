@@ -72,8 +72,13 @@ public class BiomeDefinition
             ScatterMin = 40,
             ScatterMax = 80,
 
-            MarkerAssets = new[] { "resource_node", "poi_marker" },
-            MarkerCount = 8,
+            // Asteroid-specific + cross-biome wildcard POIs (see PoiBlueprintCatalog for interaction logic).
+            MarkerAssets = new[]
+            {
+                "poi_rich_vein", "poi_crystal_geode", "poi_fissure_cavity",
+                "poi_drifting_pod", "poi_anomaly_source", "poi_wreck_fragment",
+            },
+            MarkerCount = 2,
 
             ClusterCountMin = 6,
             ClusterCountMax = 10,
@@ -129,8 +134,12 @@ public class BiomeDefinition
             ScatterMin = 30,
             ScatterMax = 60,
 
-            MarkerAssets = new[] { "beacon", "loot_marker", "poi_marker" },
-            MarkerCount = 10,
+            MarkerAssets = new[]
+            {
+                "beacon", "loot_marker",
+                "poi_drifting_pod", "poi_anomaly_source", "poi_wreck_fragment",
+            },
+            MarkerCount = 2,
 
             ClusterCountMin = 8,
             ClusterCountMax = 12,
@@ -186,8 +195,12 @@ public class BiomeDefinition
             ScatterMin = 20,
             ScatterMax = 45,
 
-            MarkerAssets = new[] { "utility_node", "poi_marker" },
-            MarkerCount = 7,
+            MarkerAssets = new[]
+            {
+                "utility_node",
+                "poi_drifting_pod", "poi_anomaly_source", "poi_wreck_fragment",
+            },
+            MarkerCount = 2,
 
             ClusterCountMin = 5,
             ClusterCountMax = 9,

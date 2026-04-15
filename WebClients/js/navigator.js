@@ -819,13 +819,13 @@ let _runPulse = 0;
 let _runAnimFrame = null;
 
 const RUN_TYPE_FILL = {
-    Start:   '#4da6f2',
-    Story:   '#f2f2ff',
-    Side:    '#737a8c',
+    Start: '#4da6f2',
+    Story: '#f2f2ff',
+    Side: '#737a8c',
     Station: '#33bf73',
     Hostile: '#e65926',
     Anomaly: '#8c40d9',
-    End:     '#f2d933',
+    End: '#f2d933',
 };
 
 const RUN_TYPE_ICONS = {
@@ -836,9 +836,9 @@ const RUN_TYPE_ICONS = {
 const RUN_STATE_BORDER = {
     Reachable: '#00d4e8',
     Completed: '#2ee65a',
-    Failed:    '#e83030',
-    Locked:    '#e89020',
-    Visible:   '#606880',
+    Failed: '#e83030',
+    Locked: '#e89020',
+    Visible: '#606880',
 };
 
 client.on('run_state_update', (msg) => {
@@ -1295,9 +1295,9 @@ function updateNavContactPanel() {
     panel.style.display = '';
 
     const color = c.Type === 'Friendly' ? '#2ee65a' :
-                  c.Type === 'Hostile' ? '#e83030' :
-                  c.Type === 'Unknown' ? '#e8d020' :
-                  c.Type === 'Anomaly' ? '#4080f0' : '#606880';
+        c.Type === 'Hostile' ? '#e83030' :
+            c.Type === 'Unknown' ? '#e8d020' :
+                c.Type === 'Anomaly' ? '#4080f0' : '#606880';
 
     const titleEl = document.getElementById('nav-contact-title');
     titleEl.innerHTML = `<span style="color:${color};">●</span> ${c.DisplayName || c.Id}`;
@@ -1329,7 +1329,8 @@ function updateNavContactPanel() {
         rows += `<div class="status-row"><span class="status-label">Typ</span><span class="status-value" style="font-size:14px; color:${color};">${c.Type}</span></div>`;
 
         if (c.ThreatLevel > 0) {
-            const tc = c.ThreatLevel > 7 ? '#e83030' : c.ThreatLevel > 4 ? '#e8d020' : '#2ee65a';
+            const tr = Math.round(c.ThreatLevel);
+            const tc = tr >= 5 ? '#e83030' : tr >= 3 ? '#e8d020' : '#2ee65a';
             rows += `<div class="status-row"><span class="status-label">Bedrohung</span><span class="status-value" style="font-size:14px; color:${tc};">Stufe ${Math.round(c.ThreatLevel)}</span></div>`;
         }
 

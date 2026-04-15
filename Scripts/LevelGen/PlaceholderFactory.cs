@@ -25,9 +25,6 @@ public static class PlaceholderFactory
         meshInstance.MaterialOverride = CreateMaterial(asset);
         obj.AddChild(meshInstance);
 
-        if (asset.IsLandmark)
-            AddLandmarkGlow(obj, asset, scale);
-
         return obj;
     }
 
@@ -65,37 +62,14 @@ public static class PlaceholderFactory
 
     private static StandardMaterial3D CreateMaterial(AssetDefinition asset)
     {
-        bool isMarker = asset.Category >= AssetCategory.ResourceNode;
         bool isMetal = asset.Category is >= AssetCategory.WreckMain
                                          and <= AssetCategory.UtilityNode;
 
-        var mat = new StandardMaterial3D
+        return new StandardMaterial3D
         {
             AlbedoColor = asset.DebugColor,
             Roughness = isMetal ? 0.5f : 0.85f,
             Metallic = isMetal ? 0.45f : 0.05f,
         };
-
-        if (isMarker)
-        {
-            mat.EmissionEnabled = true;
-            mat.Emission = asset.DebugColor;
-            mat.EmissionEnergyMultiplier = 1.2f;
-        }
-
-        return mat;
-    }
-
-    private static void AddLandmarkGlow(SpawnedObject obj, AssetDefinition asset, float scale)
-    {
-        var light = new OmniLight3D
-        {
-            LightColor = asset.DebugColor,
-            LightEnergy = 0.4f,
-            OmniRange = asset.Radius * scale * 3f,
-            OmniAttenuation = 2f,
-            ShadowEnabled = false,
-        };
-        obj.AddChild(light);
     }
 }

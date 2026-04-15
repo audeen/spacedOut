@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Godot;
+using SpacedOut.Agents;
 using SpacedOut.Run;
 using SpacedOut.Shared;
 using SpacedOut.State;
@@ -16,7 +17,10 @@ public partial class MissionController : Node
     [Signal] public delegate void MissionEndedEventHandler(int result);
 
     private readonly HashSet<string> _triggeredEvents = new();
+    private readonly HashSet<int> _firedProximity = new();
+    private readonly HashSet<int> _firedTimeTriggers = new();
     private NodeEncounterConfig? _encounterConfig;
+    private MissionScript? _script;
     private bool _useStructuredPhases;
 
     private const float DefaultPhase1End = 60f;
@@ -35,6 +39,11 @@ public partial class MissionController : Node
         _encounterConfig = config;
         _damageMultiplier = config != null ? config.DamageMultiplier : 1f;
         _useStructuredPhases = config?.UseStructuredPhases ?? false;
+    }
+
+    public void ApplyMissionScript(MissionScript? script)
+    {
+        _script = script;
     }
 
     public void StartMission()
@@ -57,13 +66,17 @@ public partial class MissionController : Node
         // Route waypoints are set by the navigator (no auto-waypoints).
         if (_state.Contacts.Count == 0)
             SetupContacts();
+        if (string.IsNullOrEmpty(_state.Mission.MissionTitle) && _encounterConfig != null
+            && !string.IsNullOrEmpty(_encounterConfig.MissionTitle))
+            _state.Mission.MissionTitle = _encounterConfig.MissionTitle;
+        if (string.IsNullOrEmpty(_state.Mission.MissionTitle))
+            _state.Mission.MissionTitle = "Einsatz";
+
+        if (string.IsNullOrEmpty(_state.Mission.BriefingText) && _encounterConfig != null
+            && !string.IsNullOrEmpty(_encounterConfig.BriefingText))
+            _state.Mission.BriefingText = _encounterConfig.BriefingText;
         if (string.IsNullOrEmpty(_state.Mission.BriefingText))
-        {
-            _state.Mission.MissionTitle = "Bergung unter Störung";
-            _state.Mission.BriefingText =
-                "Ein beschädigtes Forschungsschiff sendet ein Notsignal. " +
-                "Lokalisieren, annähern, Bergung sichern.";
-        }
+            _state.Mission.BriefingText = "Mission aktiv.";
 
         _state.Mission.Log.Add(new MissionLogEntry
         {
@@ -71,6 +84,9 @@ public partial class MissionController : Node
             Source = "System",
             Message = $"Mission gestartet: {_state.Mission.MissionTitle}"
         });
+
+        ApplyScriptInitialConditions();
+        ApplyScriptLandmarkOverride();
 
         if (_useStructuredPhases)
         {
@@ -82,6 +98,34 @@ public partial class MissionController : Node
             _state.Mission.Phase = MissionPhase.Operational;
             _state.Mission.PhaseTimer = 0;
         }
+    }
+
+    private void ApplyScriptInitialConditions()
+    {
+        if (_script?.Initial == null) return;
+
+        var initial = _script.Initial;
+        _state.Ship.HullIntegrity = initial.HullIntegrity;
+        _state.ContactsState.ProbeCharges = initial.ProbeCharges;
+
+        foreach (var (sysId, over) in initial.Systems)
+        {
+            if (!_state.Ship.Systems.TryGetValue(sysId, out var sys)) continue;
+            sys.Heat = over.Heat;
+            if (over.Status.HasValue)
+                sys.Status = over.Status.Value;
+        }
+    }
+
+    private void ApplyScriptLandmarkOverride()
+    {
+        if (_script?.Landmark == null) return;
+
+        var landmark = _state.Contacts.Find(c => c.Id == "primary_target");
+        if (landmark == null) return;
+
+        if (!string.IsNullOrEmpty(_script.Landmark.DefaultName))
+            landmark.DisplayName = _script.Landmark.DefaultName;
     }
 
     private void SetupContacts()
@@ -146,13 +190,15 @@ public partial class MissionController : Node
         UpdateScanning(delta);
         UpdateWeaknessAnalysis(delta);
         UpdateGunner(delta);
+        UpdatePoiInteractions(delta);
         UpdateEnemyAttacks(delta);
         UpdateOverlays(delta);
+        UpdateAgents(delta);
         UpdateContactMovement(delta);
-        UpdatePatrolDrone(delta);
         if (_useStructuredPhases)
             CheckPhaseTransitions();
         CheckEvents();
+        CheckScriptTriggers();
         CheckEndConditions(delta);
     }
 
@@ -384,21 +430,28 @@ public partial class MissionController : Node
 
     private void ClassifyContact(Contact contact)
     {
-        switch (contact.Id)
+        bool scriptHandled = TryClassifyFromScript(contact);
+
+        if (!scriptHandled)
         {
-            case "primary_target":
-                contact.Type = ContactType.Friendly;
-                contact.DisplayName = "Primärziel (identifiziert)";
-                contact.ThreatLevel = 0;
-                break;
-            case "unknown_contact":
-                contact.Type = ContactType.Neutral;
-                contact.DisplayName = "Unbekanntes Schiff - Klasse: Transporter";
-                contact.ThreatLevel = 3;
-                break;
-            default:
-                contact.Type = ContactType.Neutral;
-                break;
+            switch (contact.Id)
+            {
+                case "primary_target":
+                    contact.Type = ContactType.Friendly;
+                    contact.DisplayName = "Primärziel (identifiziert)";
+                    contact.ThreatLevel = 0;
+                    break;
+                case "unknown_contact":
+                    contact.Type = ContactType.Neutral;
+                    contact.DisplayName = "Unbekanntes Schiff - Klasse: Transporter";
+                    contact.ThreatLevel = 3;
+                    break;
+                default:
+                    if (contact.Agent != null)
+                        break;
+                    contact.Type = ContactType.Neutral;
+                    break;
+            }
         }
 
         _state.Mission.Log.Add(new MissionLogEntry
@@ -407,6 +460,35 @@ public partial class MissionController : Node
             Source = "Tactical",
             Message = $"Kontakt klassifiziert: {contact.DisplayName} ({contact.Type})"
         });
+    }
+
+    private bool TryClassifyFromScript(Contact contact)
+    {
+        if (_script?.Classifications == null) return false;
+
+        string? matchKey = null;
+        if (_script.Classifications.ContainsKey(contact.Id))
+            matchKey = contact.Id;
+        else if (contact.Agent != null && _script.Classifications.ContainsKey(contact.Agent.AgentType))
+            matchKey = contact.Agent.AgentType;
+
+        if (matchKey == null) return false;
+
+        var cls = _script.Classifications[matchKey];
+        if (cls.Name != null)
+            contact.DisplayName = cls.Name;
+        if (cls.Type.HasValue)
+            contact.Type = cls.Type.Value;
+        if (cls.Log != null)
+        {
+            _state.Mission.Log.Add(new MissionLogEntry
+            {
+                Timestamp = _state.Mission.ElapsedTime,
+                Source = "System",
+                Message = cls.Log,
+            });
+        }
+        return true;
     }
 
     private void UpdateOverlays(float delta)
@@ -430,16 +512,20 @@ public partial class MissionController : Node
         }
     }
 
-    private void UpdatePatrolDrone(float delta)
+    private void UpdateAgents(float delta)
     {
-        var drone = _state.Contacts.Find(c => c.Id == "patrol_drone");
-        if (drone == null) return;
+        AgentBehaviorSystem.Update(_state.Contacts, _state.Ship, delta);
 
-        float t = _state.Mission.ElapsedTime;
-        float angularSpeed = 0.15f;
-        float angle = t * angularSpeed;
-        drone.VelocityX = MathF.Cos(angle) * 8f;
-        drone.VelocityY = MathF.Sin(angle) * 8f;
+        for (int i = _state.Contacts.Count - 1; i >= 0; i--)
+        {
+            var c = _state.Contacts[i];
+            if (c.Agent?.Mode == AgentBehaviorMode.Destroyed && !c.IsDestroyed)
+            {
+                c.IsDestroyed = true;
+                c.VelocityX = 0;
+                c.VelocityY = 0;
+            }
+        }
     }
 
     private void UpdateWeaknessAnalysis(float delta)
@@ -496,6 +582,23 @@ public partial class MissionController : Node
             gunner.FireCooldown = Math.Max(0, gunner.FireCooldown - delta * cdMult);
         }
 
+        if (!string.IsNullOrEmpty(gunner.SelectedTargetId))
+        {
+            var sel = _state.Contacts.Find(c => c.Id == gunner.SelectedTargetId);
+            bool invalid = sel == null || sel.IsDestroyed || sel.Discovery != DiscoveryState.Scanned;
+            if (!invalid && sel != null)
+            {
+                invalid = gunner.Tool == ToolMode.Mining
+                    ? !GunnerContactRules.IsDrillablePoiForGunnerList(sel)
+                    : !GunnerContactRules.IsSelectableForCombat(sel);
+            }
+            if (invalid)
+            {
+                gunner.SelectedTargetId = null;
+                gunner.TargetLockProgress = 0;
+            }
+        }
+
         if (!string.IsNullOrEmpty(gunner.SelectedTargetId) && gunner.TargetLockProgress < 100f)
         {
             var contact = _state.Contacts.Find(c => c.Id == gunner.SelectedTargetId);
@@ -532,6 +635,9 @@ public partial class MissionController : Node
                 gunner.TargetLockProgress = 0;
             }
         }
+
+        if (gunner.IsAutofire && gunner.Tool == ToolMode.Combat)
+            GunnerFireAction.TryExecuteFire(_state);
     }
 
     private Contact? FindNearestHostile()
@@ -541,7 +647,7 @@ public partial class MissionController : Node
         foreach (var c in _state.Contacts)
         {
             if (c.IsDestroyed || c.Discovery != DiscoveryState.Scanned) continue;
-            if (c.ThreatLevel < 7) continue;
+            if (c.Type != ContactType.Hostile && !c.IsDesignated) continue;
             float dx = c.PositionX - _state.Ship.PositionX;
             float dy = c.PositionY - _state.Ship.PositionY;
             float d = dx * dx + dy * dy;
@@ -556,14 +662,15 @@ public partial class MissionController : Node
 
         float shieldAbsorption = ShipCalculations.CalculateShieldAbsorption(_state.Ship);
         bool activeSensors = _state.ContactsState.ActiveSensors;
+        bool forceEnemyHit = _state.Debug.GodMode;
 
         foreach (var contact in _state.Contacts)
         {
             if (contact.IsDestroyed || contact.Type != ContactType.Hostile) continue;
             if (contact.AttackDamage <= 0) continue;
 
-            float dx = contact.PositionX - _state.Ship.PositionX;
-            float dy = contact.PositionY - _state.Ship.PositionY;
+            float dx = _state.Ship.PositionX - contact.PositionX;
+            float dy = _state.Ship.PositionY - contact.PositionY;
             float dist = MathF.Sqrt(dx * dx + dy * dy);
 
             float effectiveRange = contact.AttackRange;
@@ -578,9 +685,29 @@ public partial class MissionController : Node
 
             contact.AttackCooldown = contact.AttackInterval;
 
-            float evasionMult = _state.Ship.FlightMode == FlightMode.Evasive ? 0.5f : 1f;
-            float engagementMult = _state.Engagement == EngagementRule.Defensive ? 0.8f : 1f;
-            float rawDamage = contact.AttackDamage * evasionMult * engagementMult * _damageMultiplier;
+            var (pvx, pvy) = ShipCalculations.GetShipVelocityXY(_state.Ship, _state.Route);
+            float lateral = CombatAccuracy.ComputeLateralRelativeSpeed(
+                contact.VelocityX, contact.VelocityY, pvx, pvy, dx, dy, dist);
+
+            float playerSpeed = ShipCalculations.CalculateShipSpeed(_state.Ship);
+            float enemyAcc = contact.Agent?.WeaponAccuracy ?? 0f;
+
+            float pHit = CombatAccuracy.ComputeEnemyHitChance(
+                dist, lateral, effectiveRange, enemyAcc, contact.ThreatLevel,
+                _state.Ship.FlightMode, playerSpeed, _state.Engagement);
+
+            if (!CombatAccuracy.RollHit(pHit, forceEnemyHit))
+            {
+                _state.Mission.Log.Add(new MissionLogEntry
+                {
+                    Timestamp = _state.Mission.ElapsedTime,
+                    Source = "System",
+                    Message = $"{contact.DisplayName}: Salve verfehlt"
+                });
+                continue;
+            }
+
+            float rawDamage = contact.AttackDamage * _damageMultiplier;
 
             float absorbed = rawDamage * shieldAbsorption;
             float hullDamage = rawDamage - absorbed;
@@ -665,7 +792,51 @@ public partial class MissionController : Node
             case "shield_stress": TriggerShieldStress(); break;
             case "unknown_approach": TriggerUnknownContact(); break;
             case "recovery_window": TriggerRecoveryWindow(); break;
+            default: TryTriggerScriptedEvent(id); break;
         }
+    }
+
+    private void TryTriggerScriptedEvent(string eventId)
+    {
+        if (_script?.Events == null) return;
+        if (!_script.Events.TryGetValue(eventId, out var evt)) return;
+
+        GD.Print($"[Mission] Scripted event: {eventId}");
+
+        if (evt.SystemEffects != null)
+        {
+            foreach (var fx in evt.SystemEffects)
+            {
+                if (!_state.Ship.Systems.TryGetValue(fx.System, out var sys)) continue;
+                sys.Heat = Math.Clamp(sys.Heat + fx.HeatDelta, 0, ShipSystem.MaxHeat);
+                if (fx.SetStatus.HasValue)
+                    sys.Status = fx.SetStatus.Value;
+            }
+        }
+
+        _state.ActiveEvents.Add(new GameEvent
+        {
+            Id = eventId,
+            Title = evt.Title,
+            Description = evt.Description,
+            IsActive = true,
+            TimeRemaining = evt.Duration,
+        });
+
+        if (!string.IsNullOrEmpty(evt.LogEntry))
+        {
+            _state.Mission.Log.Add(new MissionLogEntry
+            {
+                Timestamp = _state.Mission.ElapsedTime,
+                Source = "System",
+                Message = evt.LogEntry,
+            });
+        }
+
+        if (!string.IsNullOrEmpty(evt.DecisionId))
+            AddScriptedDecision(evt.DecisionId);
+
+        EmitSignal(SignalName.EventTriggered, eventId);
     }
 
     private void TriggerSensorShimmer()
@@ -743,7 +914,7 @@ public partial class MissionController : Node
             DisplayName = "Unbekannte Signatur",
             PositionX = ux,
             PositionY = uy,
-            ThreatLevel = 5,
+            ThreatLevel = 3,
             ScanProgress = 0,
             VelocityX = vx,
             VelocityY = vy,
@@ -788,6 +959,261 @@ public partial class MissionController : Node
         });
 
         EmitSignal(SignalName.EventTriggered, "recovery_window");
+    }
+
+    // ── MissionScript trigger evaluation ─────────────────────────────
+
+    private void CheckScriptTriggers()
+    {
+        if (_script == null) return;
+
+        CheckProximityTriggers();
+        CheckTimeTriggers();
+    }
+
+    private void CheckProximityTriggers()
+    {
+        if (_script == null) return;
+        for (int i = 0; i < _script.ProximityTriggers.Count; i++)
+        {
+            if (_firedProximity.Contains(i)) continue;
+            var trigger = _script.ProximityTriggers[i];
+
+            var refPos = ResolveRef(trigger.Ref);
+            if (refPos == null) continue;
+
+            float dx = _state.Ship.PositionX - refPos.Value.X;
+            float dy = _state.Ship.PositionY - refPos.Value.Y;
+            float dz = _state.Ship.PositionZ - refPos.Value.Z;
+            float dist = MathF.Sqrt(dx * dx + dy * dy + dz * dz);
+
+            if (dist > trigger.Radius) continue;
+
+            if (trigger.Once)
+                _firedProximity.Add(i);
+
+            FireScriptTrigger(trigger.EventId, trigger.DecisionId, trigger.LogEntry);
+        }
+    }
+
+    private void CheckTimeTriggers()
+    {
+        if (_script == null) return;
+        float t = _state.Mission.ElapsedTime;
+
+        for (int i = 0; i < _script.TimeTriggers.Count; i++)
+        {
+            if (_firedTimeTriggers.Contains(i)) continue;
+            var trigger = _script.TimeTriggers[i];
+            if (t < trigger.Time) continue;
+
+            if (_triggeredEvents.Contains(trigger.EventId)) continue;
+
+            if (trigger.Once)
+                _firedTimeTriggers.Add(i);
+
+            FireScriptTrigger(trigger.EventId, trigger.DecisionId, trigger.LogEntry);
+        }
+    }
+
+    private void FireScriptTrigger(string eventId, string? decisionId, string? logEntry)
+    {
+        if (!_triggeredEvents.Contains(eventId))
+        {
+            _triggeredEvents.Add(eventId);
+            TriggerEventById(eventId);
+        }
+
+        SpawnDeferredAgents(eventId);
+
+        if (decisionId != null)
+            AddScriptedDecision(decisionId);
+
+        if (logEntry != null)
+        {
+            _state.Mission.Log.Add(new MissionLogEntry
+            {
+                Timestamp = _state.Mission.ElapsedTime,
+                Source = "System",
+                Message = logEntry,
+            });
+        }
+    }
+
+    private int _deferredAgentCounter;
+
+    private void SpawnDeferredAgents(string triggerId)
+    {
+        if (_script?.DeferredAgentSpawns == null) return;
+
+        foreach (var spawn in _script.DeferredAgentSpawns)
+        {
+            if (spawn.TriggerId != triggerId) continue;
+            if (!AgentDefinition.TryGet(spawn.AgentType, out var def)) continue;
+
+            float spawnX, spawnY, spawnZ = 500f;
+            float anchorX, anchorY, anchorZ = 500f;
+
+            // Resolve anchor position
+            if (spawn.AnchorRef.HasValue)
+            {
+                var anchor = ResolveRef(spawn.AnchorRef.Value);
+                if (anchor.HasValue)
+                {
+                    anchorX = anchor.Value.X;
+                    anchorY = anchor.Value.Y;
+                    anchorZ = anchor.Value.Z;
+                }
+                else
+                {
+                    anchorX = 500f;
+                    anchorY = 500f;
+                    anchorZ = 500f;
+                }
+            }
+            else
+            {
+                anchorX = _state.Ship.PositionX;
+                anchorY = _state.Ship.PositionY;
+                anchorZ = 500f;
+            }
+
+            // Spawn at map edge, opposite side from ship relative to anchor
+            float edgeAngle;
+            if (spawn.Origin == SpawnOrigin.NearLandmark)
+            {
+                float dx = anchorX - _state.Ship.PositionX;
+                float dy = anchorY - _state.Ship.PositionY;
+                edgeAngle = MathF.Atan2(dy, dx) + MathF.PI;
+            }
+            else
+            {
+                float dx = _state.Ship.PositionX - 500f;
+                float dy = _state.Ship.PositionY - 500f;
+                edgeAngle = MathF.Atan2(dy, dx) + MathF.PI
+                    + ((_deferredAgentCounter % 3 - 1) * 0.5f);
+            }
+            spawnX = 500f + MathF.Cos(edgeAngle) * 480f;
+            spawnY = 500f + MathF.Sin(edgeAngle) * 480f;
+            spawnX = Math.Clamp(spawnX, 5f, 995f);
+            spawnY = Math.Clamp(spawnY, 5f, 995f);
+
+            float vDx = anchorX - spawnX;
+            float vDy = anchorY - spawnY;
+            float vLen = MathF.Sqrt(vDx * vDx + vDy * vDy);
+            float speed = def.BaseSpeed;
+            float vx = vLen > 0.1f ? vDx / vLen * speed : 0f;
+            float vy = vLen > 0.1f ? vDy / vLen * speed : 0f;
+
+            string contactId = $"deferred_{spawn.AgentType}_{_deferredAgentCounter++:D2}";
+
+            var contact = new Contact
+            {
+                Id = contactId,
+                Type = def.ContactType,
+                DisplayName = def.DisplayName,
+                PositionX = spawnX,
+                PositionY = spawnY,
+                PositionZ = spawnZ,
+                ThreatLevel = def.ThreatLevel,
+                ScanProgress = 0,
+                Discovery = DiscoveryState.Hidden,
+                // Same as MissionGenerator for sector agents: movable contacts use full sensor ring for Detected blips.
+                RadarShowDetectedInFullRange = true,
+                VelocityX = vx,
+                VelocityY = vy,
+                HitPoints = def.HitPoints,
+                MaxHitPoints = def.HitPoints,
+                AttackDamage = def.AttackDamage,
+                AttackInterval = def.AttackInterval,
+                AttackRange = def.AttackRange,
+                Agent = new AgentState
+                {
+                    AgentType = spawn.AgentType,
+                    Mode = spawn.InitialMode == AgentBehaviorMode.Guard
+                        ? AgentBehaviorMode.Intercept
+                        : spawn.InitialMode,
+                    AnchorX = anchorX,
+                    AnchorY = anchorY,
+                    AnchorZ = anchorZ,
+                    DestinationX = anchorX,
+                    DestinationY = anchorY,
+                    DetectionRadius = def.DetectionRadius,
+                    FleeThreshold = def.FleeThreshold,
+                    BaseSpeed = def.BaseSpeed,
+                    WeaponAccuracy = def.WeaponAccuracy,
+                    ShieldAbsorption = def.ShieldAbsorption,
+                },
+            };
+
+            _state.Contacts.Add(contact);
+            GD.Print($"[Mission] Deferred agent spawned: {spawn.AgentType} at ({spawnX:F0},{spawnY:F0}) -> ({anchorX:F0},{anchorY:F0})");
+        }
+    }
+
+    private (float X, float Y, float Z)? ResolveRef(TriggerRef triggerRef)
+    {
+        switch (triggerRef)
+        {
+            case TriggerRef.Landmark:
+            {
+                var c = _state.Contacts.Find(c => c.Id == "primary_target");
+                if (c == null) return null;
+                return (c.PositionX, c.PositionY, c.PositionZ);
+            }
+            case TriggerRef.NearestBeacon:
+            {
+                var storyBeacon = _state.Contacts.Find(c => c.Id == "story_beacon");
+                if (storyBeacon != null)
+                    return (storyBeacon.PositionX, storyBeacon.PositionY, storyBeacon.PositionZ);
+
+                float bestDist = float.MaxValue;
+                Contact? best = null;
+                foreach (var c in _state.Contacts)
+                {
+                    if (c.Type != ContactType.Neutral || c.IsDestroyed) continue;
+                    if (c.Id == "primary_target") continue;
+                    bool isBeacon = c.PreRevealed && c.Type == ContactType.Neutral;
+                    if (!isBeacon) continue;
+
+                    float dx = _state.Ship.PositionX - c.PositionX;
+                    float dy = _state.Ship.PositionY - c.PositionY;
+                    float dz = _state.Ship.PositionZ - c.PositionZ;
+                    float d = MathF.Sqrt(dx * dx + dy * dy + dz * dz);
+                    if (d < bestDist) { bestDist = d; best = c; }
+                }
+                if (best == null) return null;
+                return (best.PositionX, best.PositionY, best.PositionZ);
+            }
+            case TriggerRef.MapCenter:
+                return (500f, 500f, 500f);
+            case TriggerRef.Encounter:
+                return (_state.Mission.EncounterSpawnX, _state.Mission.EncounterSpawnY, 500f);
+            case TriggerRef.Exit:
+            {
+                var exit = _state.Contacts.Find(c => c.DisplayName == "Ausgang");
+                if (exit == null) return null;
+                return (exit.PositionX, exit.PositionY, exit.PositionZ);
+            }
+            default:
+                return null;
+        }
+    }
+
+    private void AddScriptedDecision(string decisionId)
+    {
+        if (_script?.Decisions == null) return;
+        if (!_script.Decisions.TryGetValue(decisionId, out var sd)) return;
+        if (_state.Mission.PendingDecisions.Exists(d => d.Id == decisionId)) return;
+        if (_state.Mission.CompletedDecisions.Contains(decisionId)) return;
+
+        _state.Mission.PendingDecisions.Add(new MissionDecision
+        {
+            Id = decisionId,
+            Title = sd.Title,
+            Description = sd.Description,
+            Options = sd.Options,
+        });
     }
 
     private void CheckEndConditions(float delta)
@@ -910,7 +1336,11 @@ public partial class MissionController : Node
     public void ResetMission()
     {
         _triggeredEvents.Clear();
+        _firedProximity.Clear();
+        _firedTimeTriggers.Clear();
+        _deferredAgentCounter = 0;
         _encounterConfig = null;
+        _script = null;
         _useStructuredPhases = false;
         _damageMultiplier = 1f;
         _state.ActiveEvents.Clear();

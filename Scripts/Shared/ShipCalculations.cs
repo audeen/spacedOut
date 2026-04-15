@@ -5,6 +5,36 @@ namespace SpacedOut.Shared;
 
 public static class ShipCalculations
 {
+    /// <summary>Instantaneous map-space velocity (XY) toward the active waypoint; matches UpdateShipMovement.</summary>
+    public static (float Vx, float Vy) GetShipVelocityXY(ShipState ship, RouteState route)
+    {
+        if (ship.FlightMode == FlightMode.Hold)
+            return (0f, 0f);
+
+        Waypoint? target = null;
+        foreach (var w in route.Waypoints)
+        {
+            if (!w.IsReached)
+            {
+                target = w;
+                break;
+            }
+        }
+
+        if (target == null)
+            return (0f, 0f);
+
+        float dx = target.X - ship.PositionX;
+        float dy = target.Y - ship.PositionY;
+        float dz = target.Z - ship.PositionZ;
+        float dist = MathF.Sqrt(dx * dx + dy * dy + dz * dz);
+        if (dist < 0.001f)
+            return (0f, 0f);
+
+        float speed = CalculateShipSpeed(ship);
+        return (dx / dist * speed, dy / dist * speed);
+    }
+
     public static float GetStatusMultiplier(SystemStatus status) => status switch
     {
         SystemStatus.Operational => 1f,

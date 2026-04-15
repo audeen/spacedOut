@@ -3,10 +3,23 @@
  * Target selection, firing, weapon modes, ammo management
  */
 
+/** Fixed tiers 0–5: green / yellow / red thresholds at 3 and 5. */
+function threatTierCssColor(t) {
+    const n = Math.round(Number(t));
+    if (n >= 5) return 'var(--red)';
+    if (n >= 3) return 'var(--yellow)';
+    return 'var(--green)';
+}
+
 let selectedGunnerTarget = null;
 let gunnerContacts = [];
 let weaponMode = 'Precision';
+let toolMode = 'Combat';
+let drillTarget = '';
 let isDefensiveMode = false;
+let isAutofire = false;
+let lastGunnerShotFeedbackSeq = 0;
+let gunnerShotFeedbackSynced = false;
 
 client.on('welcome', () => {
     client.selectRole('Gunner');
@@ -29,7 +42,23 @@ client.onState((msg) => {
     gunnerContacts = d.contacts || [];
     selectedGunnerTarget = d.selected_target || null;
     weaponMode = d.weapon_mode || 'Precision';
+    toolMode = d.tool_mode || 'Combat';
+    drillTarget = d.drill_target || '';
     isDefensiveMode = d.is_defensive_mode || false;
+    isAutofire = d.is_autofire || false;
+
+    const shotSeq = d.gunner_shot_feedback_seq ?? 0;
+    const shotText = d.gunner_shot_feedback || '';
+    if (!gunnerShotFeedbackSynced) {
+        lastGunnerShotFeedbackSeq = shotSeq;
+        gunnerShotFeedbackSynced = true;
+    } else if (shotSeq > lastGunnerShotFeedbackSeq && shotText) {
+        lastGunnerShotFeedbackSeq = shotSeq;
+        let kind = 'hit';
+        if (shotText.startsWith('Daneben')) kind = 'miss';
+        else if (shotText.startsWith('Vernichtung')) kind = 'kill';
+        client.showShotFeedback(shotText, kind);
+    }
 
     const weaponHeat = d.weapon_heat ?? 0;
     const weaponEnergy = d.weapon_energy ?? 25;
@@ -101,6 +130,50 @@ client.onState((msg) => {
         defBtn.style.borderColor = '';
         defBtn.style.background = '';
     }
+
+    const autoBtn = document.getElementById('autofire-btn');
+    if (autoBtn) {
+        if (isAutofire) {
+            autoBtn.textContent = 'Autofeuer: AN';
+            autoBtn.style.borderColor = 'var(--cyan)';
+            autoBtn.style.background = 'rgba(0, 200, 230, 0.15)';
+        } else {
+            autoBtn.textContent = 'Autofeuer: AUS';
+            autoBtn.style.borderColor = '';
+            autoBtn.style.background = '';
+        }
+    }
+
+    // Tool mode
+    document.querySelectorAll('#tool-mode-buttons .btn').forEach(btn => {
+        const m = btn.dataset.tool;
+        if (m === toolMode) {
+            btn.style.borderColor = m === 'Mining' ? 'var(--yellow)' : 'var(--cyan)';
+            btn.style.background = m === 'Mining' ? 'rgba(230,200,50,0.15)' : 'rgba(0,200,230,0.15)';
+            btn.classList.add('btn-primary');
+        } else {
+            btn.style.borderColor = '';
+            btn.style.background = '';
+            btn.classList.remove('btn-primary');
+        }
+    });
+
+    // Drill section
+    const drillPanel = document.getElementById('drill-panel');
+    if (drillPanel) {
+        if (toolMode === 'Mining') {
+            drillPanel.style.display = '';
+            updateDrillInfo();
+        } else {
+            drillPanel.style.display = 'none';
+        }
+    }
+
+    // Hide fire controls in Mining mode
+    const fireControls = document.getElementById('fire-controls');
+    if (fireControls) fireControls.style.display = toolMode === 'Mining' ? 'none' : '';
+    const autoBtnMining = document.getElementById('autofire-btn');
+    if (autoBtnMining) autoBtnMining.style.display = toolMode === 'Mining' ? 'none' : '';
 });
 
 function updateTargetInfo(lockProgress, fireCooldown, weaponStatus) {
@@ -146,7 +219,7 @@ function updateTargetInfo(lockProgress, fireCooldown, weaponStatus) {
     infoEl.innerHTML = `
         <div style="font-size:16px; font-weight:700;"><span style="color:${color};">●</span> ${contact.DisplayName || contact.Id}${badges}</div>
         <div class="status-row"><span class="status-label">Entfernung</span><span class="status-value text-cyan" style="font-size:16px;">${dist}</span></div>
-        <div class="status-row"><span class="status-label">Bedrohung</span><span class="status-value" style="color:${contact.ThreatLevel > 7 ? 'var(--red)' : contact.ThreatLevel > 4 ? 'var(--yellow)' : 'var(--green)'};">${Math.round(contact.ThreatLevel)}</span></div>
+        <div class="status-row"><span class="status-label">Bedrohung</span><span class="status-value" style="color:${threatTierCssColor(contact.ThreatLevel)};">${Math.round(contact.ThreatLevel)}</span></div>
         <div class="status-row"><span class="status-label">Integrität</span><span class="status-value" style="color:${hpColor};">${hpPct}%</span></div>
         <div class="progress-bar" style="height:4px; margin-top:4px;"><div class="progress-fill" style="width:${hpPct}%; background:${hpColor};"></div></div>
     `;
@@ -171,9 +244,13 @@ let _lastTargetListKey = '';
 function renderTargetList() {
     const container = document.getElementById('target-list');
     if (gunnerContacts.length === 0) {
-        if (_lastTargetListKey !== 'empty') {
-            container.innerHTML = '<div class="text-dim" style="text-align:center; padding:8px; font-size:13px;">Keine gescannten Kontakte</div>';
-            _lastTargetListKey = 'empty';
+        const emptyMsg = toolMode === 'Mining'
+            ? 'Keine bohrbaren POI-Ziele (analysiert & mit Bohrer)'
+            : 'Keine feindlichen oder priorisierten Ziele';
+        const emptyKey = `empty-${toolMode}`;
+        if (_lastTargetListKey !== emptyKey) {
+            container.innerHTML = `<div class="text-dim" style="text-align:center; padding:8px; font-size:13px;">${emptyMsg}</div>`;
+            _lastTargetListKey = emptyKey;
         }
         return;
     }
@@ -202,7 +279,7 @@ function renderTargetList() {
             <div class="contact-dot" style="background:${color};"></div>
             <div class="contact-info">
                 <div class="contact-name">${badges}${c.DisplayName || c.Id}${targeting}</div>
-                <div class="contact-meta">Dist: ${dist} · Bedrohung: ${Math.round(c.ThreatLevel)} · HP: ${Math.round(c.HitPoints)}</div>
+                <div class="contact-meta">Dist: ${dist} · Stufe: ${Math.round(c.ThreatLevel)} · HP: ${Math.round(c.HitPoints)}</div>
             </div>
         </div>`;
     }).join('');
@@ -227,6 +304,53 @@ function setWeaponMode(mode) {
 
 function toggleDefensiveMode() {
     client.sendCommand('SetDefensiveMode', { enabled: !isDefensiveMode });
+}
+
+function toggleAutofire() {
+    client.sendCommand('SetAutofire', { enabled: !isAutofire });
+}
+
+function setToolMode(mode) {
+    client.sendCommand('SetToolMode', { mode });
+    client.showToast(mode === 'Mining' ? 'Werkzeugmodus: MINING' : 'Werkzeugmodus: COMBAT', 'info');
+}
+
+function drillSelected() {
+    if (!selectedGunnerTarget) return;
+    client.sendCommand('DrillTarget', { contact_id: selectedGunnerTarget });
+    client.showToast('Bohrung gestartet', 'info');
+}
+
+function updateDrillInfo() {
+    const drillInfo = document.getElementById('drill-info');
+    if (!drillInfo) return;
+
+    if (drillTarget) {
+        const contact = gunnerContacts.find(c => c.Id === drillTarget);
+        if (contact) {
+            const progress = contact.PoiProgress || 0;
+            drillInfo.innerHTML = `
+                <div style="font-size:14px; font-weight:600; color:var(--yellow);">Bohrziel: ${contact.DisplayName}</div>
+                <div class="progress-bar progress-yellow" style="height:6px; margin-top:4px;">
+                    <div class="progress-fill" style="width:${Math.round(progress)}%"></div>
+                </div>
+                <div class="text-dim mt-4" style="font-size:12px;">${Math.round(progress)}%</div>
+            `;
+        } else {
+            drillInfo.innerHTML = '<div class="text-dim">Bohrziel verloren</div>';
+        }
+    } else {
+        const poiTargets = gunnerContacts.filter(c => c.PoiType && c.PoiPhase === 'Analyzed');
+        if (poiTargets.length > 0) {
+            drillInfo.innerHTML = poiTargets.map(c =>
+                `<button class="btn btn-warning btn-block btn-sm" onclick="selectTarget('${c.Id}'); drillSelected();">
+                    Bohren: ${c.DisplayName}
+                </button>`
+            ).join('');
+        } else {
+            drillInfo.innerHTML = '<div class="text-dim" style="text-align:center;">Kein POI bereit für Bohrung</div>';
+        }
+    }
 }
 
 client.on('paused', () => document.getElementById('paused-overlay').classList.remove('hidden'));

@@ -37,6 +37,9 @@ public partial class GameManager : Node3D
     public override void _Ready()
     {
         GD.Print("=== SpacedOut - Brückenspiel MVP ===");
+        GD.Print(GameFeatures.ResourceZonesEnabled
+            ? "[Features] Ressourcenzonen: aktiv"
+            : "[Features] Ressourcenzonen: deaktiviert (GameFeatures.ResourceZonesEnabled = false)");
 
         _server = new GameServer();
         AddChild(_server);

@@ -170,7 +170,7 @@ class SpacedOutClient {
         return this._lastState;
     }
 
-    // Toast notifications
+    // Toast notifications (default: top center)
     showToast(message, type = 'info') {
         if (!this.toastContainer) {
             this.toastContainer = document.createElement('div');
@@ -188,6 +188,37 @@ class SpacedOutClient {
         setTimeout(() => {
             if (toast.parentNode) toast.parentNode.removeChild(toast);
         }, 3500);
+    }
+
+    /**
+     * Gunner shot result: slides up from bottom (snackbar-style). kind: miss | hit | kill
+     */
+    showShotFeedback(message, kind = 'hit') {
+        if (!this.gunnerShotToastContainer) {
+            this.gunnerShotToastContainer = document.createElement('div');
+            this.gunnerShotToastContainer.className = 'toast-container toast-container--bottom';
+            document.body.appendChild(this.gunnerShotToastContainer);
+        }
+
+        const toast = document.createElement('div');
+        toast.className = 'toast toast--from-bottom toast--shot';
+        if (kind === 'miss') {
+            toast.classList.add('toast--shot-miss');
+        } else if (kind === 'kill') {
+            toast.classList.add('toast--shot-kill');
+        } else {
+            toast.classList.add('toast--shot-hit');
+        }
+        toast.textContent = message;
+        this.gunnerShotToastContainer.appendChild(toast);
+
+        const ms = 2600;
+        setTimeout(() => {
+            toast.classList.add('toast--fade-out');
+        }, ms - 320);
+        setTimeout(() => {
+            if (toast.parentNode) toast.parentNode.removeChild(toast);
+        }, ms);
     }
 
     updateConnectionStatus(connected) {

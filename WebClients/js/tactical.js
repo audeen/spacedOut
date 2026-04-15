@@ -4,10 +4,13 @@
  */
 
 let contacts = [];
+let contactActions = {};
 let resourceZones = [];
 let selectedContactId = null;
 let tacticalOnMainScreen = false;
 let probeMode = false;
+let _lastActionsJson = '';
+let _lastActionsContactId = null;
 
 let probes = [];
 let probeCharges = 3;
@@ -84,6 +87,27 @@ function getMapParams() {
     return { w, h, centerX, centerY, maxRadius, scale };
 }
 
+/** C# JsonSerializer sends DiscoveryState as 0–3; UI string checks need a name. */
+const _DISCOVERY_NAMES = ['Hidden', 'Detected', 'Probed', 'Scanned'];
+function contactDiscovery(c) {
+    const d = c.Discovery;
+    if (typeof d === 'number' && d >= 0 && d < _DISCOVERY_NAMES.length) return _DISCOVERY_NAMES[d];
+    if (typeof d === 'string') return d;
+    return 'Hidden';
+}
+
+/** Sensor-blips (Detected): inner third by default; RadarShowDetectedInFullRange uses full sensor circle. */
+function isContactVisibleOnRadar(c) {
+    const disc = contactDiscovery(c);
+    if (disc === 'Hidden') return false;
+    if (c.PreRevealed) return true;
+    if (disc !== 'Detected') return true;
+    const px = c.PositionX;
+    const py = c.PositionY;
+    const maxR = c.RadarShowDetectedInFullRange ? sensorRange : sensorRange / 3;
+    return Math.hypot(px - shipPos.x, py - shipPos.y) <= maxR;
+}
+
 function screenToMap(clientX, clientY) {
     const rect = canvas.getBoundingClientRect();
     const sx = clientX - rect.left;
@@ -104,7 +128,8 @@ function hitTestContactScreen(clientX, clientY) {
     const hitR = Math.max(16, 12 * zoom);
 
     for (const c of contacts) {
-        const isGhost = c.Discovery === 'Probed';
+        if (!isContactVisibleOnRadar(c)) continue;
+        const isGhost = contactDiscovery(c) === 'Probed';
         const dx = (isGhost ? c.SnapshotX : c.PositionX) - shipPos.x;
         const dy = (isGhost ? c.SnapshotY : c.PositionY) - shipPos.y;
         const sx = centerX + dx * scale;
@@ -368,10 +393,12 @@ function drawShipMarker(cx, cy, zf) {
 
 function drawContacts(cx, cy, scale, zf) {
     contacts.forEach(c => {
-        if (c.Discovery === 'Hidden') return;
+        const disc = contactDiscovery(c);
+        if (disc === 'Hidden') return;
+        if (!isContactVisibleOnRadar(c)) return;
 
-        const isGhost = c.Discovery === 'Probed';
-        const isScanned = c.Discovery === 'Scanned';
+        const isGhost = disc === 'Probed';
+        const isScanned = disc === 'Scanned';
         const displayX = isGhost ? (c.SnapshotX ?? c.PositionX) : c.PositionX;
         const displayY = isGhost ? (c.SnapshotY ?? c.PositionY) : c.PositionY;
         const displayZ = isGhost ? (c.SnapshotZ ?? c.PositionZ ?? 500) : (c.PositionZ ?? 500);
@@ -385,10 +412,10 @@ function drawContacts(cx, cy, scale, zf) {
 
         const baseAlpha = isGhost ? 0.35 : 1.0;
         const color = isGhost ? 'rgba(130,150,170,0.4)' :
-                      c.Type === 'Friendly' ? '#2ee65a' :
-                      c.Type === 'Hostile' ? '#e83030' :
-                      c.Type === 'Unknown' ? '#e8d020' :
-                      c.Type === 'Anomaly' ? '#4080f0' : '#606880';
+            c.Type === 'Friendly' ? '#2ee65a' :
+                c.Type === 'Hostile' ? '#e83030' :
+                    c.Type === 'Unknown' ? '#e8d020' :
+                        c.Type === 'Anomaly' ? '#4080f0' : '#606880';
 
         const isSelected = c.Id === selectedContactId;
         const dotSize = (isSelected ? 6 : isGhost ? 3 : 4) * Math.max(1, zoom * 0.7);
@@ -471,7 +498,8 @@ function drawContacts(cx, cy, scale, zf) {
         }
 
         if (c.ThreatLevel > 0 && isScanned) {
-            const tc = c.ThreatLevel > 7 ? '#e83030' : c.ThreatLevel > 4 ? '#e8d020' : '#606880';
+            const t = Math.round(c.ThreatLevel);
+            const tc = t >= 5 ? '#e83030' : t >= 3 ? '#e8d020' : '#606880';
             ctx.fillStyle = tc;
             ctx.font = `bold ${Math.max(9, 10 * Math.min(zoom, 1.5))}px monospace`;
             ctx.textAlign = 'left';
@@ -556,6 +584,7 @@ client.onState((msg) => {
 
     shipPos = { x: d.ship_x ?? 100, y: d.ship_y ?? 100, z: d.ship_z ?? 500 };
     contacts = d.contacts || [];
+    contactActions = d.contact_actions || {};
     resourceZones = d.resource_zones || [];
 
     probes = d.probes || [];
@@ -604,7 +633,15 @@ client.on('mission_ended', (msg) => {
 function renderContacts() {
     const container = document.getElementById('contacts-container');
 
-    const visible = contacts.filter(c => c.Discovery !== 'Hidden');
+    if (selectedContactId) {
+        const sel = contacts.find(c => c.Id === selectedContactId);
+        if (sel && !isContactVisibleOnRadar(sel)) {
+            selectedContactId = null;
+            updateContactActions();
+        }
+    }
+
+    const visible = contacts.filter(c => contactDiscovery(c) !== 'Hidden' && isContactVisibleOnRadar(c));
 
     if (visible.length === 0) {
         if (_contactElements.size > 0) {
@@ -632,8 +669,9 @@ function renderContacts() {
         let el = _contactElements.get(c.Id);
         const isSelected = c.Id === selectedContactId;
         const scanning = c.IsScanning;
-        const isGhost = c.Discovery === 'Probed';
-        const isScanned = c.Discovery === 'Scanned';
+        const disc = contactDiscovery(c);
+        const isGhost = disc === 'Probed';
+        const isScanned = disc === 'Scanned';
 
         if (!el) {
             el = document.createElement('div');
@@ -660,10 +698,13 @@ function renderContacts() {
         const dashOffset = circumference - (c.ScanProgress / 100) * circumference;
 
         const navBadge = (isScanned && c.ReleasedToNav) ? ' <span style="color:var(--green);font-size:10px;">[NAV]</span>' : '';
-        const name = isGhost ? `[SNAPSHOT] ${c.DisplayName || c.Id}` :
-                     isScanned ? c.DisplayName + navBadge : '???';
+        const identityRevealed = c.PreRevealed || c.ScanProgress >= 100;
+        const identified = identityRevealed;
+        const name = isGhost ? `[SNAPSHOT] ${identified ? (c.DisplayName || c.Id) : '???'}` :
+            identified ? c.DisplayName + navBadge : '???';
         const scanStr = c.ScanProgress < 100 ? `Scan: ${Math.round(c.ScanProgress)}%` :
-                        isScanned ? c.Type : '---';
+            isScanned ? c.Type : '---';
+        const threatStr = identityRevealed ? String(Math.round(c.ThreatLevel)) : '?';
 
         let inner;
         if (c.ScanProgress < 100 && c.ScanProgress > 0) {
@@ -674,12 +715,12 @@ function renderContacts() {
                 `stroke-dasharray="${circumference}" stroke-dashoffset="${dashOffset}"/>` +
                 `</svg><div class="scan-ring-text">${Math.round(c.ScanProgress)}%</div></div>` +
                 `<div class="contact-info"><div class="contact-name">${name}${scanning ? ' ◉' : ''}</div>` +
-                `<div class="contact-meta">${scanStr} · Dist: ${dist} · T:${Math.round(c.ThreatLevel)}</div></div>`;
+                `<div class="contact-meta">${scanStr} · Dist: ${dist} · T:${threatStr}</div></div>`;
         } else {
             inner =
                 `<div class="contact-dot ${getContactDotClass(c.Type)}"></div>` +
                 `<div class="contact-info"><div class="contact-name">${name}${scanning ? ' ◉' : ''}</div>` +
-                `<div class="contact-meta">${scanStr} · Dist: ${dist} · T:${Math.round(c.ThreatLevel)}</div></div>`;
+                `<div class="contact-meta">${scanStr} · Dist: ${dist} · T:${threatStr}</div></div>`;
         }
 
         if (el._lastInner !== inner) { el.innerHTML = inner; el._lastInner = inner; }
@@ -716,126 +757,105 @@ function selectContact(contactId) {
 
 function updateContactActions() {
     const panel = document.getElementById('contact-actions');
-    if (!selectedContactId) { panel.style.display = 'none'; return; }
+    if (!selectedContactId) {
+        panel.style.display = 'none';
+        _lastActionsJson = '';
+        _lastActionsContactId = null;
+        return;
+    }
 
     const contact = contacts.find(c => c.Id === selectedContactId);
-    if (!contact || contact.Discovery === 'Hidden') { panel.style.display = 'none'; return; }
+    if (!contact || contactDiscovery(contact) === 'Hidden') {
+        panel.style.display = 'none';
+        _lastActionsJson = '';
+        _lastActionsContactId = null;
+        return;
+    }
+
+    const actions = contactActions[selectedContactId];
+    if (!actions || actions.length === 0) {
+        panel.style.display = 'none';
+        _lastActionsJson = '';
+        _lastActionsContactId = null;
+        return;
+    }
 
     panel.style.display = '';
-    document.getElementById('selected-contact-name').textContent = contact.DisplayName || '???';
-    document.getElementById('threat-slider').value = Math.round(contact.ThreatLevel);
-    document.getElementById('threat-value').textContent = Math.round(contact.ThreatLevel);
+    const identityRevealed = contact.PreRevealed || contact.ScanProgress >= 100;
+    document.getElementById('selected-contact-name').textContent =
+        identityRevealed ? (contact.DisplayName || '???') : 'Unbekannt';
 
-    const scanBtn = document.getElementById('scan-btn');
-    if (contact.ScanProgress >= 100) {
-        scanBtn.disabled = true;
-        scanBtn.textContent = 'Scan komplett';
-    } else if (contact.IsScanning) {
-        scanBtn.disabled = true;
-        scanBtn.textContent = `Scanne... ${Math.round(contact.ScanProgress)}%`;
-    } else {
-        scanBtn.disabled = false;
-        scanBtn.textContent = 'Scannen';
+    const fingerprint = JSON.stringify(actions);
+    if (fingerprint === _lastActionsJson && selectedContactId === _lastActionsContactId) return;
+    _lastActionsJson = fingerprint;
+    _lastActionsContactId = selectedContactId;
+
+    const container = document.getElementById('action-buttons-container');
+    container.innerHTML = '';
+
+    const groups = {};
+    for (const action of actions) {
+        const g = action.Group || 'default';
+        if (!groups[g]) groups[g] = [];
+        groups[g].push(action);
     }
 
-    const releaseBtn = document.getElementById('release-nav-btn');
-    if (contact.Discovery === 'Scanned' && !contact.PreRevealed) {
-        releaseBtn.style.display = '';
-        if (contact.ReleasedToNav) {
-            releaseBtn.textContent = 'Kommandant: Freigegeben ✓';
-            releaseBtn.style.borderColor = 'var(--green)';
-            releaseBtn.style.background = 'rgba(50, 230, 100, 0.15)';
-        } else {
-            releaseBtn.textContent = 'Für Kommandant freigeben';
-            releaseBtn.style.borderColor = '';
-            releaseBtn.style.background = '';
+    for (const groupName of Object.keys(groups)) {
+        const items = groups[groupName];
+        const row = document.createElement('div');
+        row.className = 'action-row';
+        if (items.length > 1) row.classList.add(`action-row-${Math.min(items.length, 3)}`);
+
+        for (const action of items) {
+            row.appendChild(buildButtonAction(action));
         }
-    } else if (contact.PreRevealed) {
-        releaseBtn.style.display = '';
-        releaseBtn.textContent = 'Bekanntes Objekt';
-        releaseBtn.disabled = true;
-        releaseBtn.style.borderColor = 'var(--green)';
-        releaseBtn.style.background = 'rgba(50, 230, 100, 0.08)';
-    } else {
-        releaseBtn.style.display = 'none';
-    }
 
-    const designateBtn = document.getElementById('designate-btn');
-    if (designateBtn) {
-        if (contact.Discovery === 'Scanned') {
-            designateBtn.style.display = '';
-            designateBtn.textContent = contact.IsDesignated ? 'Designation aufheben' : 'Ziel designieren (+25% DMG)';
-            designateBtn.style.borderColor = contact.IsDesignated ? 'var(--red)' : '';
-            designateBtn.style.background = contact.IsDesignated ? 'rgba(232,48,48,0.15)' : '';
-        } else {
-            designateBtn.style.display = 'none';
-        }
-    }
-
-    const analyzeBtn = document.getElementById('analyze-btn');
-    if (analyzeBtn) {
-        if (contact.Discovery === 'Scanned' && !contact.HasWeakness) {
-            analyzeBtn.style.display = '';
-            if (contact.IsAnalyzing) {
-                analyzeBtn.disabled = true;
-                analyzeBtn.textContent = `Analysiere... ${Math.round(contact.WeaknessAnalysisProgress || 0)}%`;
-            } else {
-                analyzeBtn.disabled = false;
-                analyzeBtn.textContent = 'Schwachstelle analysieren (+50% DMG)';
-            }
-        } else if (contact.HasWeakness) {
-            analyzeBtn.style.display = '';
-            analyzeBtn.disabled = true;
-            analyzeBtn.textContent = 'Schwachstelle identifiziert ✓';
-            analyzeBtn.style.borderColor = 'var(--green)';
-        } else {
-            analyzeBtn.style.display = 'none';
-        }
+        container.appendChild(row);
     }
 }
 
-function scanSelected() {
-    if (!selectedContactId) return;
-    client.sendCommand('ScanContact', { contact_id: selectedContactId });
-    client.showToast('Scan gestartet', 'info');
-}
+function buildButtonAction(action) {
+    const btn = document.createElement('button');
+    const styleMap = {
+        primary: 'btn-primary', danger: 'btn-danger',
+        warning: 'btn-warning', success: 'btn-success', default: '',
+    };
+    btn.className = `btn btn-block ${styleMap[action.Style] || ''}`;
+    btn.textContent = action.Label;
+    btn.disabled = action.Disabled || false;
 
-function markSelected() {
-    if (!selectedContactId) return;
-    client.sendCommand('MarkContact', { contact_id: selectedContactId });
-    client.showToast('Marker angefordert', 'info');
-}
+    if (action.Active) {
+        const colorMap = {
+            success: { border: 'var(--green)', bg: 'rgba(50, 230, 100, 0.15)' },
+            danger: { border: 'var(--red)', bg: 'rgba(232, 48, 48, 0.15)' },
+            primary: { border: 'var(--cyan)', bg: 'rgba(0, 200, 230, 0.15)' },
+            warning: { border: 'var(--orange)', bg: 'rgba(232, 144, 32, 0.15)' },
+        };
+        const colors = colorMap[action.Style] || colorMap.success;
+        btn.style.borderColor = colors.border;
+        btn.style.background = colors.bg;
+    }
 
-function releaseToNavigator() {
-    if (!selectedContactId) return;
-    const contact = contacts.find(c => c.Id === selectedContactId);
-    if (!contact || contact.Discovery !== 'Scanned' || contact.PreRevealed) return;
-    client.sendCommand('ReleaseToNavigator', { contact_id: selectedContactId });
-    const action = contact.ReleasedToNav ? 'gesperrt' : 'freigegeben';
-    client.showToast(`Kontakt für Kommandant ${action}`, 'info');
-}
+    if (action.Progress != null && action.Progress < 100) {
+        btn.style.backgroundImage =
+            `linear-gradient(90deg, rgba(0,200,230,0.15) ${action.Progress}%, transparent ${action.Progress}%)`;
+    }
 
-function designateTarget() {
-    if (!selectedContactId) return;
-    client.sendCommand('DesignateTarget', { contact_id: selectedContactId });
-}
+    if (action.Command) {
+        btn.addEventListener('click', () => {
+            if (!selectedContactId) return;
+            if (action.Confirm && !confirm(action.Label + '?')) return;
+            const payload = { contact_id: selectedContactId, ...(action.Data || {}) };
+            client.sendCommand(action.Command, payload);
+        });
+    }
 
-function analyzeWeakness() {
-    if (!selectedContactId) return;
-    client.sendCommand('AnalyzeWeakness', { contact_id: selectedContactId });
-    client.showToast('Schwachstellenanalyse gestartet', 'info');
+    return btn;
 }
 
 function setSensorMode(mode) {
     client.sendCommand('SetSensorMode', { mode });
     client.showToast(mode === 'active' ? 'Aktive Sensoren' : 'Passive Sensoren', 'info');
-}
-
-function setThreatLevel() {
-    if (!selectedContactId) return;
-    const level = parseInt(document.getElementById('threat-slider').value);
-    client.sendCommand('SetThreatPriority', { contact_id: selectedContactId, threat_level: level });
-    client.showToast(`Bedrohungsstufe: ${level}`, 'info');
 }
 
 function raiseTacticalWarning() {

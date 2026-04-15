@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.Text.Json;
 using Godot;
+using SpacedOut.Poi;
 using SpacedOut.Sector;
 using SpacedOut.Shared;
 using SpacedOut.State;
@@ -23,7 +24,6 @@ public class TacticalCommandHandler
         {
             CommandNames.ScanContact => HandleScanContact(data),
             CommandNames.MarkContact => HandleMarkContact(data),
-            CommandNames.SetThreatPriority => HandleSetThreatPriority(data),
             CommandNames.RaiseTacticalWarning => HandleRaiseWarning(role, data),
             CommandNames.ToggleTacticalOnMainScreen => HandleToggleTactical(),
             CommandNames.DeployProbe => HandleDeployProbe(data),
@@ -33,6 +33,7 @@ public class TacticalCommandHandler
             CommandNames.SetSensorMode => HandleSetSensorMode(data),
             CommandNames.PinContact => HandlePinContact(data),
             CommandNames.UnpinContact => HandleUnpinContact(data),
+            CommandNames.AnalyzePoi => HandleAnalyzePoi(data),
             _ => false,
         };
     }
@@ -56,8 +57,8 @@ public class TacticalCommandHandler
     private bool HandleMarkContact(JsonElement data)
     {
         string contactId = data.GetProperty("contact_id").GetString() ?? "";
-        var contact = _ctx.State.Contacts.Find(c => c.Id == contactId);
-        if (contact == null) return false;
+        if (!TryAddPinnedContact(contactId, out var contact) || contact == null)
+            return false;
 
         var overlay = new OverlayRequest
         {
@@ -72,21 +73,7 @@ public class TacticalCommandHandler
             ApprovedByCaptain = true,
         };
         _ctx.State.Overlays.Add(overlay);
-        contact.IsVisibleOnMainScreen = true;
         _ctx.AddLog("Tactical", $"Kontakt auf Hauptschirm markiert: {contact.DisplayName}");
-        _ctx.EmitStateChanged();
-        return true;
-    }
-
-    private bool HandleSetThreatPriority(JsonElement data)
-    {
-        string contactId = data.GetProperty("contact_id").GetString() ?? "";
-        float threat = data.GetProperty("threat_level").GetSingle();
-        var contact = _ctx.State.Contacts.Find(c => c.Id == contactId);
-        if (contact == null) return false;
-
-        contact.ThreatLevel = Math.Clamp(threat, 0, 10);
-        _ctx.AddLog("Tactical", $"Bedrohungsstufe {contact.DisplayName}: {threat:F0}");
         _ctx.EmitStateChanged();
         return true;
     }
@@ -164,6 +151,8 @@ public class TacticalCommandHandler
 
     private void RevealResourceZonesInProbeRange(float probeMapX, float probeMapY, float probeRadius)
     {
+        if (!GameFeatures.ResourceZonesEnabled) return;
+
         var sector = _ctx.CurrentSector;
         if (sector == null) return;
 
@@ -261,7 +250,20 @@ public class TacticalCommandHandler
     private bool HandlePinContact(JsonElement data)
     {
         string contactId = data.GetProperty("contact_id").GetString() ?? "";
-        var contact = _ctx.State.Contacts.Find(c => c.Id == contactId);
+        if (!TryAddPinnedContact(contactId, out var contact) || contact == null)
+            return false;
+
+        _ctx.AddLog("Tactical", $"Kontakt gepinnt: {contact.DisplayName}");
+        _ctx.EmitStateChanged();
+        return true;
+    }
+
+    /// <summary>
+    /// Shared logic for <see cref="HandlePinContact"/> and <see cref="HandleMarkContact"/>.
+    /// </summary>
+    private bool TryAddPinnedContact(string contactId, out Contact? contact)
+    {
+        contact = _ctx.State.Contacts.Find(c => c.Id == contactId);
         if (contact == null) return false;
         if (contact.Discovery != DiscoveryState.Scanned && !contact.PreRevealed) return false;
 
@@ -278,8 +280,6 @@ public class TacticalCommandHandler
         });
 
         contact.IsVisibleOnMainScreen = true;
-        _ctx.AddLog("Tactical", $"Kontakt gepinnt: {contact.DisplayName}");
-        _ctx.EmitStateChanged();
         return true;
     }
 
@@ -290,6 +290,33 @@ public class TacticalCommandHandler
         if (removed == 0) return false;
 
         _ctx.AddLog("Tactical", $"Pin entfernt: {contactId}");
+        _ctx.EmitStateChanged();
+        return true;
+    }
+
+    private bool HandleAnalyzePoi(JsonElement data)
+    {
+        string contactId = data.GetProperty("contact_id").GetString() ?? "";
+        var contact = _ctx.State.Contacts.Find(c => c.Id == contactId);
+        if (contact == null) return false;
+        if (contact.Discovery != DiscoveryState.Scanned) return false;
+        if (string.IsNullOrEmpty(contact.PoiType)) return false;
+        if (contact.PoiPhase != PoiPhase.None) return false;
+
+        var bp = PoiBlueprintCatalog.GetOrNull(contact.PoiType);
+        if (bp == null) return false;
+
+        float dx = contact.PositionX - _ctx.State.Ship.PositionX;
+        float dy = contact.PositionY - _ctx.State.Ship.PositionY;
+        float dist = MathF.Sqrt(dx * dx + dy * dy);
+        if (dist > bp.AnalyzeRange) return false;
+
+        foreach (var c in _ctx.State.Contacts)
+            c.PoiAnalyzing = false;
+
+        contact.PoiAnalyzing = true;
+        contact.PoiProgress = 0;
+        _ctx.AddLog("Tactical", $"POI-Analyse gestartet: {contact.DisplayName}");
         _ctx.EmitStateChanged();
         return true;
     }

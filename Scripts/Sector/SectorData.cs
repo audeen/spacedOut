@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using Godot;
+using SpacedOut.Run;
 
 namespace SpacedOut.Sector;
 
@@ -12,6 +13,7 @@ public class SectorData
     public Vector3 ExitPoint { get; set; }
     public Vector3 LandmarkPosition { get; set; }
     public Vector3 EncounterPosition { get; set; }
+    public RunNodeType? NodeType { get; set; }
 
     public List<SectorEntity> Entities { get; } = new();
     public List<ResourceZone> ResourceZones { get; } = new();

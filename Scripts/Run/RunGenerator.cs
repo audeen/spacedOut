@@ -27,12 +27,13 @@ public class RunGenerator
         var start = new RunNodeData
         {
             Id = "START",
-            Title = "Sektor-Einstieg",
+            Title = "Blindsprung",
             Type = RunNodeType.Start,
             RiskRating = 0,
             LayoutX = 0.5f,
             LayoutY = 0.02f,
             NextNodeIds = new List<string>(),
+            AssignedMissionId = "tutorial_blindsprung",
         };
         TouchDepth(start);
         def.Nodes["START"] = start;

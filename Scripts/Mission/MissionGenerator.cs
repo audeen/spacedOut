@@ -1,7 +1,9 @@
 using System;
 using System.Linq;
 using Godot;
+using SpacedOut.Agents;
 using SpacedOut.LevelGen;
+using SpacedOut.Poi;
 using SpacedOut.Sector;
 using SpacedOut.Shared;
 using SpacedOut.State;
@@ -36,7 +38,6 @@ public static class MissionGenerator
         state.ContactsState.ProbeCharges = 3;
         state.ContactsState.ProbeRechargeTimer = 0;
 
-        PopulateMissionInfo(state, sector.BiomeId, sector.Seed);
         PopulateContactsFromSector(state, sector);
         PopulateResourceZones(state, sector);
 
@@ -68,60 +69,19 @@ public static class MissionGenerator
         state.Ship.PositionY = shipMap.Y;
         state.Ship.PositionZ = shipMap.Z;
 
-        PopulateMissionInfo(state, level.CurrentBiomeId, level.CurrentSeed);
-    }
-
-    // ── Mission identity ────────────────────────────────────────────
-
-    private static void PopulateMissionInfo(GameState state, string biomeId, int seed)
-    {
-        switch (biomeId)
-        {
-            case "asteroid_field":
-                state.Mission.MissionId = $"asteroid_survey_{seed}";
-                state.Mission.MissionTitle = "Erkundung Asteroidenfeld";
-                state.Mission.BriefingText =
-                    "Ein unchartiertes Asteroidenfeld wurde in diesem Sektor identifiziert. " +
-                    "Ihr Auftrag: Durchqueren Sie das Feld, scannen Sie den zentralen " +
-                    "Asteroiden-Komplex und erreichen Sie den Ausgangspunkt. " +
-                    "Sensorinterferenzen durch metallische Asteroiden sind möglich.";
-                break;
-
-            case "wreck_zone":
-                state.Mission.MissionId = $"wreck_salvage_{seed}";
-                state.Mission.MissionTitle = "Bergung in Wrackzone";
-                state.Mission.BriefingText =
-                    "Ein schwaches Notsignal wurde aus einer Trümmerzone empfangen. " +
-                    "Lokalisieren Sie das Hauptwrack, nähern Sie sich und " +
-                    "sichern Sie die Bergung. Das Gebiet enthält dichten " +
-                    "Trümmerregen – Schilde bereithalten.";
-                break;
-
-            case "station_periphery":
-                state.Mission.MissionId = $"station_approach_{seed}";
-                state.Mission.MissionTitle = "Andockmanöver Stationsperipherie";
-                state.Mission.BriefingText =
-                    "Eine Versorgungsstation in diesem Sektor erwartet Ihre Ankunft. " +
-                    "Navigieren Sie durch die Peripherie-Strukturen zum Stationskern " +
-                    "und führen Sie ein Andockmanöver durch. " +
-                    "Frachtverkehr im Umfeld ist zu erwarten.";
-                break;
-        }
     }
 
     // ── Contacts from SectorData entities ───────────────────────────
 
     private static void PopulateContactsFromSector(GameState state, SectorData sector)
     {
-        // Encounter marker position for MissionController
+        // Begegnungspunkt für MissionController: Layout-EncounterPosition, oder missionsgesetzter Marker
         var encEntity = sector.Entities.FirstOrDefault(e =>
             e.Type == SectorEntityType.EncounterMarker);
-        if (encEntity != null)
-        {
-            var ep = CoordinateMapper.WorldToMap3D(encEntity.WorldPosition, sector.LevelRadius);
-            state.Mission.EncounterSpawnX = ep.X;
-            state.Mission.EncounterSpawnY = ep.Y;
-        }
+        Vector3 encWorld = encEntity != null ? encEntity.WorldPosition : sector.EncounterPosition;
+        var encMap = CoordinateMapper.WorldToMap3D(encWorld, sector.LevelRadius);
+        state.Mission.EncounterSpawnX = encMap.X;
+        state.Mission.EncounterSpawnY = encMap.Y;
 
         foreach (var entity in sector.Entities)
         {
@@ -131,6 +91,7 @@ public static class MissionGenerator
             var contact = new Contact
             {
                 Id = entity.Id,
+                AssetId = entity.AssetId,
                 Type = entity.ContactType,
                 DisplayName = entity.DisplayName,
                 PositionX = p.X,
@@ -140,6 +101,7 @@ public static class MissionGenerator
                 ScanProgress = entity.ScanProgress,
                 Discovery = entity.Discovery,
                 PreRevealed = entity.PreRevealed,
+                RadarShowDetectedInFullRange = entity.RadarShowDetectedInFullRange || entity.IsMovable,
                 VelocityX = entity.Velocity.X,
                 VelocityY = entity.Velocity.Z,
                 VelocityZ = entity.Velocity.Y,
@@ -149,6 +111,14 @@ public static class MissionGenerator
             {
                 contact.ReleasedToNav = true;
                 contact.IsVisibleOnMainScreen = true;
+            }
+
+            if (!string.IsNullOrEmpty(entity.PoiType))
+            {
+                contact.PoiType = entity.PoiType;
+                contact.PoiRewardProfile = entity.PoiRewardProfile;
+                if (entity.PoiHasTrap)
+                    contact.PoiRewardProfile = entity.PoiRewardProfile;
             }
 
             if (entity.IsLandmark)
@@ -163,6 +133,37 @@ public static class MissionGenerator
                 };
             }
 
+            if (!string.IsNullOrEmpty(entity.AgentTypeId) &&
+                AgentDefinition.TryGet(entity.AgentTypeId, out var agentDef))
+            {
+                contact.HitPoints = agentDef.HitPoints;
+                contact.MaxHitPoints = agentDef.HitPoints;
+                contact.AttackDamage = agentDef.AttackDamage;
+                contact.AttackInterval = agentDef.AttackInterval;
+                contact.AttackRange = agentDef.AttackRange;
+
+                var anchorMap = CoordinateMapper.WorldToMap3D(entity.AnchorPosition, sector.LevelRadius);
+                var destMap = CoordinateMapper.WorldToMap3D(entity.DestinationPosition, sector.LevelRadius);
+
+                contact.Agent = new AgentState
+                {
+                    AgentType = entity.AgentTypeId,
+                    Mode = entity.InitialBehaviorMode,
+                    AnchorX = anchorMap.X,
+                    AnchorY = anchorMap.Y,
+                    AnchorZ = anchorMap.Z,
+                    DestinationX = destMap.X,
+                    DestinationY = destMap.Y,
+                    DetectionRadius = agentDef.DetectionRadius,
+                    FleeThreshold = agentDef.FleeThreshold,
+                    BaseSpeed = agentDef.BaseSpeed,
+                    WeaponAccuracy = agentDef.WeaponAccuracy,
+                    ShieldAbsorption = agentDef.ShieldAbsorption,
+                    OrbitAngle = contact.PositionX * 0.1f,
+                    PhaseOffset = contact.PositionY * 0.07f,
+                };
+            }
+
             state.Contacts.Add(contact);
         }
     }
@@ -172,6 +173,9 @@ public static class MissionGenerator
     private static void PopulateResourceZones(GameState state, SectorData sector)
     {
         state.ResourceZones.Clear();
+        if (!GameFeatures.ResourceZonesEnabled)
+            return;
+
         float mapScale = 500f / sector.LevelRadius;
 
         foreach (var zone in sector.ResourceZones)

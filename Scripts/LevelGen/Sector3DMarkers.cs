@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using Godot;
 using SpacedOut.Sector;
 using SpacedOut.Shared;
@@ -52,18 +53,26 @@ public class Sector3DMarkers
         {
             if (!_markers.TryGetValue(entity.Id, out var marker)) continue;
 
-            bool visible = entity.Discovery != DiscoveryState.Hidden || entity.PreRevealed;
-            marker.Visible = visible;
-
-            if (entity.IsMovable)
-                marker.GlobalPosition = entity.WorldPosition;
+            marker.Visible = true;
+            marker.GlobalPosition = entity.WorldPosition;
         }
     }
 
-    public void AddPinBracket(string entityId, Vector3 worldPos, string label)
+    /// <summary>
+    /// Creates a 3D marker for an entity added at runtime (not present during Initialize).
+    /// </summary>
+    public void AddDynamicMarker(SectorEntity entity)
+    {
+        if (_markers.ContainsKey(entity.Id)) return;
+        var marker = CreateContactMarker(entity);
+        _container.AddChild(marker);
+        _markers[entity.Id] = marker;
+    }
+
+    public void AddPinBracket(string entityId, Vector3 worldPos, float objectWorldRadius, string label)
     {
         if (_pinBrackets.ContainsKey(entityId)) return;
-        var bracket = CreateBracketMarker(worldPos, label);
+        var bracket = CreateBracketMarker(worldPos, objectWorldRadius, label);
         _container.AddChild(bracket);
         _pinBrackets[entityId] = bracket;
     }
@@ -74,13 +83,20 @@ public class Sector3DMarkers
         bracket.QueueFree();
     }
 
-    public void UpdatePinPositions(SectorData data)
+    /// <summary>Removes 3D pin brackets whose contact id is no longer in the pinned set.</summary>
+    public void RemovePinBracketsExcept(HashSet<string> keepContactIds)
     {
-        foreach (var entity in data.Entities)
+        foreach (var id in _pinBrackets.Keys.ToList())
         {
-            if (!_pinBrackets.TryGetValue(entity.Id, out var bracket)) continue;
-            bracket.GlobalPosition = entity.WorldPosition;
+            if (!keepContactIds.Contains(id))
+                RemovePinBracket(id);
         }
+    }
+
+    public void SetPinBracketWorldPosition(string contactEntityId, Vector3 worldPos)
+    {
+        if (_pinBrackets.TryGetValue(contactEntityId, out var bracket))
+            bracket.GlobalPosition = worldPos;
     }
 
     public void Clear()
@@ -127,15 +143,24 @@ public class Sector3DMarkers
         return node;
     }
 
-    private static Node3D CreateBracketMarker(Vector3 pos, string label)
+    /// <summary>
+    /// Pin ring sized from <paramref name="objectWorldRadius"/>; orientation via <see cref="PinBracketFacing"/>
+    /// (LookAt active camera each frame — material billboards fail for TorusMesh).
+    /// </summary>
+    private static Node3D CreateBracketMarker(Vector3 pos, float objectWorldRadius, string label)
     {
-        var node = new Node3D { Name = $"Pin_{label}" };
+        var node = new PinBracketFacing { Name = $"Pin_{label}" };
+
+        float meanR = Mathf.Clamp(objectWorldRadius * 1.28f, 4f, 140f);
+        float tube = Mathf.Max(meanR * 0.07f, 0.45f);
+        float inner = Mathf.Max(meanR - tube, 0.5f);
+        float outer = meanR + tube;
 
         var ring = new TorusMesh
         {
-            InnerRadius = 4f,
-            OuterRadius = 5f,
-            Rings = 16,
+            InnerRadius = inner,
+            OuterRadius = outer,
+            Rings = Mathf.Max(12, (int)(16 * Mathf.Clamp(meanR / 24f, 0.85f, 1.4f))),
             RingSegments = 12,
         };
         var mat = new StandardMaterial3D
@@ -146,7 +171,6 @@ public class Sector3DMarkers
             Emission = ThemeColors.Cyan,
             EmissionEnergyMultiplier = 1.5f,
             ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
-            BillboardMode = BaseMaterial3D.BillboardModeEnum.FixedY,
         };
         var mi = new MeshInstance3D { Mesh = ring, MaterialOverride = mat };
         node.AddChild(mi);

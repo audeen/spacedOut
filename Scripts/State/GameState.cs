@@ -4,8 +4,10 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Linq;
 using Godot;
+using SpacedOut.Poi;
 using SpacedOut.Run;
 using SpacedOut.Shared;
+using SpacedOut.Tactical;
 
 namespace SpacedOut.State;
 
@@ -40,7 +42,13 @@ public enum DiscoveryState { Hidden, Detected, Probed, Scanned }
 public enum WeaponMode { Precision, Barrage }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
+public enum ToolMode { Combat, Mining }
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
 public enum EngagementRule { Standard, Aggressive, Defensive }
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum AgentBehaviorMode { Idle, Patrol, Transit, Guard, Intercept, Attack, Flee, Destroyed }
 
 public class ShipSystem
 {
@@ -101,9 +109,9 @@ public class ShipState
 
 public class MissionState
 {
-    public string MissionId { get; set; } = "bergung_unter_stoerung";
-    public string MissionTitle { get; set; } = "Bergung unter Störung";
-    public MissionPhase Phase { get; set; } = MissionPhase.Briefing;
+    public string MissionId { get; set; } = "";
+    public string MissionTitle { get; set; } = "";
+    public MissionPhase Phase { get; set; } = MissionPhase.Operational;
     /// <summary>When true, scripted phase timeline and phase UI are active; otherwise sandbox (single <see cref="MissionPhase.Operational"/> phase).</summary>
     public bool UseStructuredMissionPhases { get; set; }
     public ObjectiveStatus PrimaryObjective { get; set; } = ObjectiveStatus.InProgress;
@@ -147,12 +155,15 @@ public class MissionLogEntry
 public class Contact
 {
     public string Id { get; set; } = "";
+    /// <summary>Level-gen asset id (e.g. poi_derelict_probe). Empty for agents / legacy contacts.</summary>
+    public string AssetId { get; set; } = "";
     public ContactType Type { get; set; } = ContactType.Unknown;
     public string DisplayName { get; set; } = "";
     public float PositionX { get; set; }
     public float PositionY { get; set; }
     public float PositionZ { get; set; } = 500f;
-    public float ThreatLevel { get; set; }
+    /// <summary>Fixed tier 0–5 (none … critical). Set from sector/mission data only.</summary>
+    public int ThreatLevel { get; set; }
     public float ScanProgress { get; set; }
     public bool IsVisibleOnMainScreen { get; set; }
     public bool IsScanning { get; set; }
@@ -171,6 +182,10 @@ public class Contact
     public bool ReleasedToNav { get; set; }
     /// <summary>Known objects (stations, mission targets, beacons) that bypass the fog-of-war pipeline entirely.</summary>
     public bool PreRevealed { get; set; }
+    /// <summary>
+    /// When true, a Detected blip is drawn out to full sensor range; when false, only the inner range ring (sensor/3).
+    /// </summary>
+    public bool RadarShowDetectedInFullRange { get; set; }
     /// <summary>Tactical has designated this as a priority target for the gunner (+25% damage).</summary>
     public bool IsDesignated { get; set; }
     /// <summary>Tactical has completed a deep analysis revealing weaknesses (+50% damage).</summary>
@@ -195,6 +210,50 @@ public class Contact
     public float AttackRange { get; set; } = 200f;
     /// <summary>True when this hostile is currently targeting the player ship.</summary>
     public bool IsTargetingPlayer { get; set; }
+
+    // ── POI interaction state ────────────────────────────────────
+    /// <summary>Blueprint id from PoiBlueprintCatalog (empty = not a POI).</summary>
+    public string PoiType { get; set; } = "";
+    public PoiPhase PoiPhase { get; set; } = PoiPhase.None;
+    /// <summary>Progress of the current POI phase (0-100).</summary>
+    public float PoiProgress { get; set; }
+    /// <summary>Reward profile chosen at spawn (for multi-variant POIs like drifting_pod).</summary>
+    public string PoiRewardProfile { get; set; } = "";
+    /// <summary>True when Tactical analysis has revealed a trap.</summary>
+    public bool PoiTrapRevealed { get; set; }
+    /// <summary>True while the Gunner is actively drilling this POI.</summary>
+    public bool PoiDrilling { get; set; }
+    /// <summary>True while the Engineer is actively extracting from this POI.</summary>
+    public bool PoiExtracting { get; set; }
+    /// <summary>Remaining seconds before instability causes failure (0 = no timer).</summary>
+    public float PoiInstabilityTimer { get; set; }
+    /// <summary>True while the Tactical is actively analyzing this POI.</summary>
+    public bool PoiAnalyzing { get; set; }
+
+    /// <summary>AI behavior state for agent-controlled contacts (null for static/scripted contacts).</summary>
+    [JsonIgnore]
+    public AgentState? Agent { get; set; }
+}
+
+public class AgentState
+{
+    public string AgentType { get; set; } = "";
+    public AgentBehaviorMode Mode { get; set; }
+    public float AnchorX { get; set; }
+    public float AnchorY { get; set; }
+    public float AnchorZ { get; set; } = 500f;
+    public float DestinationX { get; set; }
+    public float DestinationY { get; set; }
+    public float DetectionRadius { get; set; } = 250f;
+    public float FleeThreshold { get; set; } = 0.2f;
+    public float OrbitAngle { get; set; }
+    public float BaseSpeed { get; set; }
+    /// <summary>Enemy gunnery skill (0–1) from agent definition; used for hit chance vs. the player.</summary>
+    public float WeaponAccuracy { get; set; } = 0.55f;
+    public float ShieldAbsorption { get; set; }
+    public float ModeTimer { get; set; }
+    public int OrbitDirection { get; set; } = 1;
+    public float PhaseOffset { get; set; }
 }
 
 public class MapResourceZone
@@ -266,8 +325,20 @@ public class GunnerState
     public string? SelectedTargetId { get; set; }
     public float TargetLockProgress { get; set; }
     public WeaponMode Mode { get; set; } = WeaponMode.Precision;
+    public ToolMode Tool { get; set; } = ToolMode.Combat;
     public bool IsDefensiveMode { get; set; }
+    /// <summary>When true, mission tick fires automatically while locked (combat tool only).</summary>
+    public bool IsAutofire { get; set; }
     public float FireCooldown { get; set; }
+
+    /// <summary>Increments on each shot (hit/miss); clients use to show one-shot UI feedback.</summary>
+    public int LastShotFeedbackSeq { get; set; }
+
+    /// <summary>Short German line for gunner HUD toast (last shot only).</summary>
+    public string LastShotFeedbackText { get; set; } = "";
+
+    /// <summary>Contact id currently being drilled (null = not drilling).</summary>
+    public string? DrillTargetId { get; set; }
 
     public const float PrecisionLockTime = 3.5f;
     public const float BarrageLockTime = 1.5f;
@@ -349,7 +420,9 @@ public class GameState
                 data["mission_title"] = Mission.MissionTitle;
                 data["use_structured_phases"] = Mission.UseStructuredMissionPhases;
                 data["star_map_on_main_screen"] = ShowStarMapOnMainScreen;
-                data["resource_zones"] = ResourceZones.FindAll(z => z.Discovery != "Hidden");
+                data["resource_zones"] = GameFeatures.ResourceZonesEnabled
+                    ? ResourceZones.FindAll(z => z.Discovery != "Hidden")
+                    : new List<MapResourceZone>();
                 break;
 
             case StationRole.Engineer:
@@ -360,10 +433,38 @@ public class GameState
                 data["active_events"] = ActiveEvents.FindAll(e => e.IsActive);
                 data["spare_parts"] = ActiveRunState?.Resources.GetValueOrDefault(
                     RunResourceIds.SpareParts, 0) ?? 0;
+                data["poi_contacts"] = Contacts
+                    .FindAll(c =>
+                        !string.IsNullOrEmpty(c.PoiType) && c.Discovery == DiscoveryState.Scanned
+                        && c.PoiPhase != PoiPhase.None && c.PoiPhase != PoiPhase.Complete
+                        && c.PoiPhase != PoiPhase.Failed && !c.IsDestroyed)
+                    .Select(c =>
+                    {
+                        var bp = PoiBlueprintCatalog.GetOrNull(c.PoiType);
+                        return new Dictionary<string, object>
+                        {
+                            ["Id"] = c.Id,
+                            ["DisplayName"] = c.DisplayName,
+                            ["PositionX"] = c.PositionX,
+                            ["PositionY"] = c.PositionY,
+                            ["PoiPhase"] = c.PoiPhase.ToString(),
+                            ["PoiProgress"] = c.PoiProgress,
+                            ["PoiExtracting"] = c.PoiExtracting,
+                            ["UsesTractorBeam"] = bp?.UsesTractorBeam ?? false,
+                        };
+                    })
+                    .ToList();
+                data["ship_x"] = Ship.PositionX;
+                data["ship_y"] = Ship.PositionY;
                 break;
 
             case StationRole.Tactical:
-                data["contacts"] = Contacts.FindAll(c => c.Discovery != DiscoveryState.Hidden && !c.IsDestroyed);
+                var tacticalContacts = Contacts.FindAll(c => c.Discovery != DiscoveryState.Hidden && !c.IsDestroyed);
+                data["contacts"] = tacticalContacts;
+                var contactActions = new Dictionary<string, List<ActionDescriptor>>();
+                foreach (var c in tacticalContacts)
+                    contactActions[c.Id] = ContactActionResolver.Resolve(c, this);
+                data["contact_actions"] = contactActions;
                 data["sensor_energy"] = Ship.Energy.Sensors;
                 data["sensor_status"] = Ship.Systems[SystemId.Sensors].Status.ToString();
                 data["sensor_range"] = CalculateSensorRange();
@@ -381,20 +482,30 @@ public class GameState
                 data["active_sensors"] = ContactsState.ActiveSensors;
                 data["pinned_entities"] = PinnedEntities;
                 data["max_pins"] = MaxPins;
-                data["resource_zones"] = ResourceZones.FindAll(z => z.Discovery != "Hidden");
+                data["resource_zones"] = GameFeatures.ResourceZonesEnabled
+                    ? ResourceZones.FindAll(z => z.Discovery != "Hidden")
+                    : new List<MapResourceZone>();
                 break;
 
             case StationRole.Gunner:
-                data["contacts"] = Contacts.FindAll(c =>
-                    c.Discovery == DiscoveryState.Scanned && !c.IsDestroyed);
+                data["contacts"] = Gunner.Tool == ToolMode.Mining
+                    ? Contacts.FindAll(GunnerContactRules.IsDrillablePoiForGunnerList)
+                    : Contacts.FindAll(c =>
+                        c.Discovery == DiscoveryState.Scanned && !c.IsDestroyed
+                        && GunnerContactRules.IsSelectableForCombat(c));
                 data["selected_target"] = Gunner.SelectedTargetId ?? "";
                 data["target_lock_progress"] = Gunner.TargetLockProgress;
                 data["weapon_mode"] = Gunner.Mode.ToString();
+                data["tool_mode"] = Gunner.Tool.ToString();
+                data["drill_target"] = Gunner.DrillTargetId ?? "";
                 data["weapon_heat"] = Ship.Systems[SystemId.Weapons].Heat;
                 data["weapon_status"] = Ship.Systems[SystemId.Weapons].Status.ToString();
                 data["weapon_energy"] = Ship.Energy.Weapons;
                 data["fire_cooldown"] = Gunner.FireCooldown;
                 data["is_defensive_mode"] = Gunner.IsDefensiveMode;
+                data["is_autofire"] = Gunner.IsAutofire;
+                data["gunner_shot_feedback_seq"] = Gunner.LastShotFeedbackSeq;
+                data["gunner_shot_feedback"] = Gunner.LastShotFeedbackText;
                 data["ship_x"] = Ship.PositionX;
                 data["ship_y"] = Ship.PositionY;
                 data["ship_z"] = Ship.PositionZ;

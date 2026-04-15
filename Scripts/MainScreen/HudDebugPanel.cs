@@ -1,5 +1,7 @@
 using System;
+using System.Linq;
 using Godot;
+using SpacedOut.Agents;
 using SpacedOut.LevelGen;
 using SpacedOut.State;
 using TC = SpacedOut.Shared.ThemeColors;
@@ -117,9 +119,34 @@ public class HudDebugPanel
             ("Alle scannen", "scan_all"));
         AddButtonRow(
             ("Zonen sondieren", "reveal_all_resource_zones"));
-        AddButtonRow(
-            ("+Feind", "spawn_hostile"),
-            ("+Verbünd.", "spawn_friendly"));
+        _buttons.AddChild(UI.CreateLabel("NPC-Agent:", 11, TC.DimWhite));
+        var agentSpawnRow = new HBoxContainer();
+        agentSpawnRow.AddThemeConstantOverride("separation", 4);
+        var agentIds = AgentDefinition.GetAll().OrderBy(kvp => kvp.Value.DisplayName).Select(kvp => kvp.Key).ToList();
+        var agentDropdown = new OptionButton
+        {
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+            CustomMinimumSize = new Vector2(0, 28),
+        };
+        for (int ai = 0; ai < agentIds.Count; ai++)
+        {
+            var def = AgentDefinition.Get(agentIds[ai]);
+            agentDropdown.AddItem($"{def.DisplayName}  ({agentIds[ai]})", ai);
+        }
+        agentSpawnRow.AddChild(agentDropdown);
+        var spawnAgentBtn = new Button
+        {
+            Text = "Spawn",
+            CustomMinimumSize = new Vector2(72, 28),
+        };
+        spawnAgentBtn.Pressed += () =>
+        {
+            int sel = agentDropdown.Selected;
+            if (sel < 0 || sel >= agentIds.Count) return;
+            _onCommand($"spawn_agent:{agentIds[sel]}");
+        };
+        agentSpawnRow.AddChild(spawnAgentBtn);
+        _buttons.AddChild(agentSpawnRow);
         AddButtonRow(
             ("Feinde töten", "kill_all_hostiles"));
         AddButtonRow(

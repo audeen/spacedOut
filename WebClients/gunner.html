@@ -41,8 +41,23 @@
             </div>
         </div>
 
-        <!-- Weapon Mode -->
+        <!-- Tool Mode -->
         <div class="panel">
+            <div class="panel-title">Werkzeugmodus</div>
+            <div class="btn-grid btn-grid-2" id="tool-mode-buttons">
+                <button class="btn btn-primary" data-tool="Combat" onclick="setToolMode('Combat')">
+                    Combat
+                    <div class="text-dim" style="font-size:10px;">Waffen aktiv</div>
+                </button>
+                <button class="btn" data-tool="Mining" onclick="setToolMode('Mining')">
+                    Mining
+                    <div class="text-dim" style="font-size:10px;">Bohrer aktiv</div>
+                </button>
+            </div>
+        </div>
+
+        <!-- Weapon Mode -->
+        <div class="panel" id="fire-controls">
             <div class="panel-title">Waffenmodus</div>
             <div class="btn-grid btn-grid-2" id="weapon-mode-buttons">
                 <button class="btn btn-primary" data-mode="Precision" onclick="setWeaponMode('Precision')">
@@ -53,6 +68,14 @@
                     Sperrfeuer
                     <div class="text-dim" style="font-size:10px;">Schnelle Salven, hohe Hitze</div>
                 </button>
+            </div>
+        </div>
+
+        <!-- Drill Panel (Mining mode only) -->
+        <div class="panel" id="drill-panel" style="display:none; border-left: 3px solid var(--yellow);">
+            <div class="panel-title" style="color:var(--yellow);">Bohrer</div>
+            <div id="drill-info">
+                <div class="text-dim" style="text-align:center;">Kein POI bereit für Bohrung</div>
             </div>
         </div>
 
@@ -73,6 +96,9 @@
             </div>
             <button class="btn btn-danger btn-block mt-8" id="fire-btn" onclick="fire()" disabled>
                 ▶ FEUER
+            </button>
+            <button class="btn btn-block mt-4" id="autofire-btn" onclick="toggleAutofire()">
+                Autofeuer: AUS
             </button>
             <button class="btn btn-block mt-4" id="cease-fire-btn" onclick="ceaseFire()" style="display:none;">
                 Feuer einstellen
@@ -102,7 +128,7 @@
         <div class="panel">
             <div class="panel-title">Zielliste</div>
             <div id="target-list" class="contact-list">
-                <div class="text-dim" style="text-align:center; padding:8px; font-size:13px;">Keine gescannten Kontakte</div>
+                <div class="text-dim" style="text-align:center; padding:8px; font-size:13px;">Keine feindlichen oder priorisierten Ziele</div>
             </div>
         </div>
 
@@ -113,7 +139,7 @@
                 Defensivfeuer: AUS
             </button>
             <div class="text-dim mt-4" style="font-size:11px;">
-                Automatisches Feuer auf nahe feindliche Kontakte (Bedrohung ≥ 7). Geringerer Schaden, erzeugt Hitze.
+                Wählt automatisch das nächste Ziel aus der Zielliste (Feind oder vom Tactical priorisiert). Geringerer Schaden, erzeugt Hitze.
             </div>
         </div>
     </div>

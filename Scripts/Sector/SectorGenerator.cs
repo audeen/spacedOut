@@ -2,7 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Godot;
+using SpacedOut.Agents;
 using SpacedOut.LevelGen;
+using SpacedOut.Mission;
+using SpacedOut.Poi;
+using SpacedOut.Run;
 using SpacedOut.State;
 
 namespace SpacedOut.Sector;
@@ -17,32 +21,41 @@ public class SectorGenerator
     private Random _rng = new();
     private int _instanceCounter;
 
-    public SectorData Generate(int seed, string biomeId)
+    public SectorData Generate(int seed, string biomeId, RunNodeType? nodeType = null,
+        float radiusMultiplier = 1f, List<AgentSpawnProfile>? agentOverrides = null,
+        IReadOnlyList<MissionMarkerPlacement>? missionMarkers = null)
     {
         _rng = new Random(seed);
         _instanceCounter = 0;
 
         var biome = BiomeDefinition.Get(biomeId);
+        float effectiveRadius = biome.LevelRadius * Math.Max(radiusMultiplier, 0.1f);
+        float scaleFactor = effectiveRadius / biome.LevelRadius;
+
         var data = new SectorData
         {
             Seed = seed,
             BiomeId = biomeId,
-            LevelRadius = biome.LevelRadius,
+            LevelRadius = effectiveRadius,
+            NodeType = nodeType,
         };
 
         CalculateLayout(data, biome);
         PlaceLandmarks(data, biome);
 
-        var clusters = GenerateClusterCenters(data, biome);
+        var clusters = GenerateClusterCenters(data, biome, scaleFactor);
         data.ClusterCenters.AddRange(clusters);
 
-        PlaceMidScale(data, biome, clusters);
-        PlaceSmallInClusters(data, biome, clusters);
-        PlaceScatter(data, biome);
-        PlaceMarkers(data, biome);
-        GenerateResourceZones(data, biome);
-        PopulateResourceZoneFill(data, biome);
-        PlaceDynamicContacts(data, biome, seed);
+        PlaceMidScale(data, biome, clusters, scaleFactor);
+        PlaceSmallInClusters(data, biome, clusters, scaleFactor);
+        PlaceScatter(data, biome, scaleFactor);
+        PlaceMarkers(data, biome, scaleFactor, missionMarkers);
+        if (GameFeatures.ResourceZonesEnabled)
+        {
+            GenerateResourceZones(data, biome, scaleFactor);
+            PopulateResourceZoneFill(data, biome);
+        }
+        PlaceDynamicContacts(data, biome, seed, agentOverrides);
 
         return data;
     }
@@ -51,7 +64,7 @@ public class SectorGenerator
 
     private void CalculateLayout(SectorData data, BiomeDefinition biome)
     {
-        float r = biome.LevelRadius;
+        float r = data.LevelRadius;
 
         float spawnAngle = NextFloat() * Mathf.Tau;
         data.SpawnPoint = new Vector3(
@@ -104,9 +117,17 @@ public class SectorGenerator
 
     // ── Cluster centers ─────────────────────────────────────────────
 
-    private List<Vector3> GenerateClusterCenters(SectorData data, BiomeDefinition biome)
+    private List<Vector3> GenerateClusterCenters(SectorData data, BiomeDefinition biome,
+        float scaleFactor = 1f)
     {
-        int count = _rng.Next(biome.ClusterCountMin, biome.ClusterCountMax + 1);
+        float sf = MathF.Sqrt(scaleFactor);
+        int countMin = (int)(biome.ClusterCountMin * sf);
+        int countMax = (int)(biome.ClusterCountMax * sf);
+        int count = _rng.Next(countMin, countMax + 1);
+        float r = data.LevelRadius;
+        float spacing = biome.ClusterSpacing * scaleFactor;
+        float safeRadius = biome.SpawnSafeRadius * scaleFactor;
+        float corridorWidth = biome.CorridorWidth * scaleFactor;
         var centers = new List<Vector3>(count);
 
         for (int i = 0; i < count; i++)
@@ -115,15 +136,15 @@ public class SectorGenerator
             for (int attempt = 0; attempt < 60; attempt++)
             {
                 float angle = NextFloat() * Mathf.Tau;
-                float dist = (NextFloat() * 0.55f + 0.2f) * biome.LevelRadius;
+                float dist = (NextFloat() * 0.55f + 0.2f) * r;
                 var c = new Vector3(
                     MathF.Cos(angle) * dist,
-                    (NextFloat() - 0.5f) * biome.LevelRadius * 0.22f,
+                    (NextFloat() - 0.5f) * r * 0.22f,
                     MathF.Sin(angle) * dist);
 
-                if (c.DistanceTo(data.SpawnPoint) < biome.SpawnSafeRadius * 1.5f) continue;
-                if (IsInCorridor(c, data.SpawnPoint, data.LandmarkPosition, biome.CorridorWidth * 0.8f)) continue;
-                if (!AllFarEnough(c, centers, biome.ClusterSpacing)) continue;
+                if (c.DistanceTo(data.SpawnPoint) < safeRadius * 1.5f) continue;
+                if (IsInCorridor(c, data.SpawnPoint, data.LandmarkPosition, corridorWidth * 0.8f)) continue;
+                if (!AllFarEnough(c, centers, spacing)) continue;
 
                 centers.Add(c);
                 found = true;
@@ -133,10 +154,10 @@ public class SectorGenerator
             if (!found)
             {
                 float a = NextFloat() * Mathf.Tau;
-                float d = NextFloat() * biome.LevelRadius * 0.6f;
+                float d = NextFloat() * r * 0.6f;
                 centers.Add(new Vector3(
                     MathF.Cos(a) * d,
-                    (NextFloat() - 0.5f) * biome.LevelRadius * 0.15f,
+                    (NextFloat() - 0.5f) * r * 0.15f,
                     MathF.Sin(a) * d));
             }
         }
@@ -146,11 +167,14 @@ public class SectorGenerator
 
     // ── Mid-scale objects ───────────────────────────────────────────
 
-    private void PlaceMidScale(SectorData data, BiomeDefinition biome, List<Vector3> clusters)
+    private void PlaceMidScale(SectorData data, BiomeDefinition biome, List<Vector3> clusters,
+        float scaleFactor = 1f)
     {
-        int total = _rng.Next(biome.MidScaleMin, biome.MidScaleMax + 1);
+        float sf = MathF.Sqrt(scaleFactor);
+        int total = _rng.Next((int)(biome.MidScaleMin * sf), (int)(biome.MidScaleMax * sf) + 1);
         if (clusters.Count == 0) return;
 
+        float clusterRadius = biome.ClusterRadius * scaleFactor;
         int perCluster = total / clusters.Count;
         int remainder = total % clusters.Count;
 
@@ -163,7 +187,7 @@ public class SectorGenerator
                 var def = AssetLibrary.GetById(assetId);
                 if (def == null) continue;
 
-                var pos = clusters[c] + RandomInSphere(biome.ClusterRadius);
+                var pos = clusters[c] + RandomInSphere(clusterRadius);
                 float scale = Mathf.Lerp(def.MinScale, def.MaxScale, NextFloat());
                 TryPlaceEntity(data, def, pos, scale, biome);
             }
@@ -172,12 +196,15 @@ public class SectorGenerator
 
     // ── Small objects in clusters ───────────────────────────────────
 
-    private void PlaceSmallInClusters(SectorData data, BiomeDefinition biome, List<Vector3> clusters)
+    private void PlaceSmallInClusters(SectorData data, BiomeDefinition biome, List<Vector3> clusters,
+        float scaleFactor = 1f)
     {
-        int total = _rng.Next(biome.SmallMin, biome.SmallMax + 1);
+        float sf = MathF.Sqrt(scaleFactor);
+        int total = _rng.Next((int)(biome.SmallMin * sf), (int)(biome.SmallMax * sf) + 1);
         int inClusters = (int)(total * 0.65f);
         if (clusters.Count == 0) return;
 
+        float clusterRadius = biome.ClusterRadius * scaleFactor;
         int perCluster = inClusters / clusters.Count;
 
         for (int c = 0; c < clusters.Count; c++)
@@ -188,7 +215,7 @@ public class SectorGenerator
                 var def = AssetLibrary.GetById(assetId);
                 if (def == null) continue;
 
-                var pos = clusters[c] + RandomInSphere(biome.ClusterRadius * 1.3f);
+                var pos = clusters[c] + RandomInSphere(clusterRadius * 1.3f);
                 float scale = Mathf.Lerp(def.MinScale, def.MaxScale, NextFloat());
                 TryPlaceEntity(data, def, pos, scale, biome);
             }
@@ -197,16 +224,17 @@ public class SectorGenerator
 
     // ── Scatter ─────────────────────────────────────────────────────
 
-    private void PlaceScatter(SectorData data, BiomeDefinition biome)
+    private void PlaceScatter(SectorData data, BiomeDefinition biome, float scaleFactor = 1f)
     {
-        int count = _rng.Next(biome.ScatterMin, biome.ScatterMax + 1);
+        float sf = MathF.Sqrt(scaleFactor);
+        int count = _rng.Next((int)(biome.ScatterMin * sf), (int)(biome.ScatterMax * sf) + 1);
         for (int i = 0; i < count; i++)
         {
             string assetId = biome.SmallAssets[_rng.Next(biome.SmallAssets.Length)];
             var def = AssetLibrary.GetById(assetId);
             if (def == null) continue;
 
-            var pos = RandomInSphere(biome.LevelRadius * 0.8f);
+            var pos = RandomInSphere(data.LevelRadius * 0.8f);
             float scale = Mathf.Lerp(def.MinScale, def.MaxScale, NextFloat());
             TryPlaceEntity(data, def, pos, scale, biome);
         }
@@ -214,7 +242,8 @@ public class SectorGenerator
 
     // ── Markers (POI, exit, encounter, etc.) ────────────────────────
 
-    private void PlaceMarkers(SectorData data, BiomeDefinition biome)
+    private void PlaceMarkers(SectorData data, BiomeDefinition biome, float scaleFactor = 1f,
+        IReadOnlyList<MissionMarkerPlacement>? missionMarkers = null)
     {
         // Exit marker
         var exitDef = AssetLibrary.GetById("exit_marker");
@@ -229,27 +258,39 @@ public class SectorGenerator
             data.Entities.Add(entity);
         }
 
-        // Encounter marker
-        var encDef = AssetLibrary.GetById("encounter_marker");
-        if (encDef != null)
+        // Encounter hotspot is only data.EncounterPosition (CalculateLayout). Optional encounter_marker
+        // contacts can be placed via mission scripts / MissionMarkerPlacement — not auto-spawned here.
+
+        PlaceGuaranteedMissionMarkers(data, biome, missionMarkers);
+
+        var excludedFromRandom = new HashSet<string>();
+        if (missionMarkers != null)
         {
-            var entity = CreateEntity(encDef, data.EncounterPosition, 1f, Vector3.Zero, data.BiomeId);
-            entity.MapPresence = MapPresence.Point;
-            entity.DisplayName = "Begegnungssignal";
-            entity.Discovery = DiscoveryState.Hidden;
-            data.Entities.Add(entity);
+            foreach (var m in missionMarkers)
+                excludedFromRandom.Add(m.AssetId);
         }
 
-        // POI / resource / loot markers
-        for (int i = 0; i < biome.MarkerCount; i++)
+        string[] randomPool = biome.MarkerAssets;
+        if (excludedFromRandom.Count > 0)
         {
-            string assetId = biome.MarkerAssets[_rng.Next(biome.MarkerAssets.Length)];
+            var filtered = biome.MarkerAssets.Where(a => !excludedFromRandom.Contains(a)).ToArray();
+            if (filtered.Length > 0)
+                randomPool = filtered;
+        }
+
+        // POI / resource / loot markers (random pool — no story-critical assets)
+        float sf = MathF.Sqrt(scaleFactor);
+        int maxMarkers = (int)MathF.Max(0f, biome.MarkerCount * sf);
+        int markerCount = maxMarkers <= 0 ? 0 : _rng.Next(0, maxMarkers + 1);
+        for (int i = 0; i < markerCount; i++)
+        {
+            string assetId = randomPool[_rng.Next(randomPool.Length)];
             var def = AssetLibrary.GetById(assetId);
             if (def == null) continue;
 
             for (int attempt = 0; attempt < 50; attempt++)
             {
-                var pos = RandomInSphere(biome.LevelRadius * 0.75f);
+                var pos = RandomInSphere(data.LevelRadius * 0.75f);
                 if (CanPlace(pos, def.Radius, def.MinSpacing, data.Entities, data.SpawnPoint, biome.SpawnSafeRadius))
                 {
                     var entity = CreateEntity(def, pos, 1f, Vector3.Zero, data.BiomeId);
@@ -263,22 +304,72 @@ public class SectorGenerator
         }
     }
 
+    private void PlaceGuaranteedMissionMarkers(SectorData data, BiomeDefinition biome,
+        IReadOnlyList<MissionMarkerPlacement>? placements)
+    {
+        if (placements == null || placements.Count == 0) return;
+
+        foreach (var p in placements)
+        {
+            if (string.IsNullOrEmpty(p.AssetId) || string.IsNullOrEmpty(p.ContactId)) continue;
+            var def = AssetLibrary.GetById(p.AssetId);
+            if (def == null) continue;
+
+            Vector3 pos = p.Rule switch
+            {
+                MarkerPlacementRule.AlongSpawnToLandmark => data.SpawnPoint.Lerp(
+                    data.LandmarkPosition, Math.Clamp(p.TAlongPath, 0f, 1f))
+                    + new Vector3(0f, (NextFloat() - 0.5f) * data.LevelRadius * 0.04f, 0f),
+                _ => data.SpawnPoint,
+            };
+
+            if (!CanPlace(pos, def.Radius, def.MinSpacing, data.Entities, data.SpawnPoint, biome.SpawnSafeRadius))
+            {
+                float push = 0f;
+                for (int attempt = 0; attempt < 12; attempt++)
+                {
+                    push += data.LevelRadius * 0.02f;
+                    var tryPos = pos + (data.LandmarkPosition - data.SpawnPoint).Normalized() * push;
+                    if (CanPlace(tryPos, def.Radius, def.MinSpacing, data.Entities, data.SpawnPoint,
+                            biome.SpawnSafeRadius))
+                    {
+                        pos = tryPos;
+                        break;
+                    }
+                }
+            }
+
+            var entity = CreateEntity(def, pos, 1f, Vector3.Zero, data.BiomeId);
+            entity.Id = p.ContactId;
+            entity.MapPresence = MapPresence.Point;
+            entity.IsMissionRelevant = true;
+            entity.Tags = new[] { "mission", "story" };
+            ApplyMarkerDefaults(entity, def);
+            data.Entities.Add(entity);
+        }
+    }
+
     // ── Resource zones (Phase 2 data, generated here for consistency) ──
 
-    private void GenerateResourceZones(SectorData data, BiomeDefinition biome)
+    private void GenerateResourceZones(SectorData data, BiomeDefinition biome, float scaleFactor = 1f)
     {
+        float sf = MathF.Sqrt(scaleFactor);
+        float r = data.LevelRadius;
+
         foreach (var template in biome.ResourceZoneTemplates)
         {
-            int count = _rng.Next(template.CountMin, template.CountMax + 1);
+            int count = _rng.Next(
+                (int)(template.CountMin * sf),
+                (int)(template.CountMax * sf) + 1);
             for (int i = 0; i < count; i++)
             {
                 for (int attempt = 0; attempt < 40; attempt++)
                 {
                     float angle = NextFloat() * Mathf.Tau;
-                    float dist = (NextFloat() * 0.5f + 0.15f) * biome.LevelRadius;
+                    float dist = (NextFloat() * 0.5f + 0.15f) * r;
                     var center = new Vector3(
                         MathF.Cos(angle) * dist,
-                        (NextFloat() - 0.5f) * biome.LevelRadius * 0.1f,
+                        (NextFloat() - 0.5f) * r * 0.1f,
                         MathF.Sin(angle) * dist);
 
                     if (center.DistanceTo(data.SpawnPoint) < biome.SpawnSafeRadius * 2f) continue;
@@ -291,9 +382,10 @@ public class SectorGenerator
                     float density = Mathf.Lerp(template.DensityMin, template.DensityMax, NextFloat());
                     float amount = radius * density * 100f;
 
+                    string zoneId = $"zone_{template.ResourceType}_{i}";
                     data.ResourceZones.Add(new ResourceZone
                     {
-                        Id = $"zone_{template.ResourceType}_{i}",
+                        Id = zoneId,
                         ResourceType = template.ResourceType,
                         Center = center,
                         Radius = radius,
@@ -302,9 +394,38 @@ public class SectorGenerator
                         TotalAmount = amount,
                         RemainingAmount = amount,
                     });
+                    TrySpawnResourceSignalForZone(data, biome, center, radius, zoneId);
                     break;
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// One tactical "Ressourcensignal" point contact per resource zone (not from the random marker pool).
+    /// </summary>
+    private void TrySpawnResourceSignalForZone(
+        SectorData data, BiomeDefinition biome, Vector3 zoneCenter, float zoneRadius, string zoneId)
+    {
+        var def = AssetLibrary.GetById("resource_node");
+        if (def == null) return;
+
+        float placeRadius = MathF.Max(zoneRadius * 0.35f, 8f);
+        for (int attempt = 0; attempt < 25; attempt++)
+        {
+            var offset = placeRadius > 0.5f ? RandomInSphere(placeRadius) : Vector3.Zero;
+            var pos = zoneCenter + offset;
+            if (!CanPlace(pos, def.Radius, def.MinSpacing, data.Entities, data.SpawnPoint, biome.SpawnSafeRadius))
+                continue;
+
+            var entity = CreateEntity(def, pos, 1f, Vector3.Zero, data.BiomeId);
+            entity.Id = $"rsig_{zoneId}";
+            entity.MapPresence = MapPresence.Point;
+            entity.IsMissionRelevant = true;
+            entity.Tags = new[] { "resource_zone_signal", zoneId };
+            ApplyMarkerDefaults(entity, def);
+            data.Entities.Add(entity);
+            return;
         }
     }
 
@@ -364,34 +485,100 @@ public class SectorGenerator
         }
     }
 
-    // ── Dynamic contacts (patrol drone etc.) ────────────────────────
+    // ── Dynamic contacts (agents) ─────────────────────────────────
 
-    private void PlaceDynamicContacts(SectorData data, BiomeDefinition biome, int seed)
+    private void PlaceDynamicContacts(SectorData data, BiomeDefinition biome, int seed,
+        List<AgentSpawnProfile>? agentOverrides = null)
     {
-        float droneSpawnDist = biome.LevelRadius * 0.4f;
-        float angle = new Random(seed).NextSingle() * MathF.PI * 2f;
-        var dronePos = data.SpawnPoint + new Vector3(
-            MathF.Cos(angle) * droneSpawnDist,
-            0f,
-            MathF.Sin(angle) * droneSpawnDist);
+        var profiles = agentOverrides ?? AgentSpawnConfig.GetProfiles(data.BiomeId, data.NodeType);
+        int agentIndex = 0;
 
-        data.Entities.Add(new SectorEntity
+        foreach (var profile in profiles)
         {
-            Id = "patrol_drone",
-            Type = SectorEntityType.PatrolDrone,
-            AssetId = "encounter_marker",
-            WorldPosition = dronePos,
-            Scale = 1f,
-            Radius = 3f,
-            Tags = new[] { "contact", "mobile" },
-            MapPresence = MapPresence.Point,
-            DisplayName = "Bewegliches Objekt",
-            ContactType = ContactType.Unknown,
-            ThreatLevel = 4,
-            Discovery = DiscoveryState.Hidden,
-            IsMovable = true,
-            Velocity = new Vector3(8f, 0f, 0f),
-        });
+            if (!AgentDefinition.TryGet(profile.AgentType, out var def)) continue;
+
+            int count = _rng.Next(profile.CountMin, profile.CountMax + 1);
+            for (int i = 0; i < count; i++)
+            {
+                Vector3 spawnPos;
+                Vector3 anchorPos;
+                Vector3 destinationPos;
+
+                float lr = data.LevelRadius;
+                if (profile.SpawnNearLandmark)
+                {
+                    float offset = lr * 0.1f;
+                    float a = NextFloat() * Mathf.Tau;
+                    spawnPos = data.LandmarkPosition + new Vector3(
+                        MathF.Cos(a) * offset, 0f, MathF.Sin(a) * offset);
+                    anchorPos = data.LandmarkPosition;
+                }
+                else
+                {
+                    float dist = lr * profile.SpawnRadiusFactor;
+                    float a = NextFloat() * Mathf.Tau;
+                    spawnPos = new Vector3(
+                        MathF.Cos(a) * dist,
+                        (NextFloat() - 0.5f) * lr * 0.06f,
+                        MathF.Sin(a) * dist);
+                    anchorPos = spawnPos;
+                }
+
+                if (profile.InitialMode == AgentBehaviorMode.Transit)
+                {
+                    float entryAngle = NextFloat() * Mathf.Tau;
+                    float exitAngle = entryAngle + MathF.PI + (NextFloat() - 0.5f) * 0.8f;
+                    float edgeDist = lr * 0.9f;
+                    spawnPos = new Vector3(
+                        MathF.Cos(entryAngle) * edgeDist,
+                        (NextFloat() - 0.5f) * lr * 0.06f,
+                        MathF.Sin(entryAngle) * edgeDist);
+                    destinationPos = new Vector3(
+                        MathF.Cos(exitAngle) * edgeDist,
+                        (NextFloat() - 0.5f) * lr * 0.06f,
+                        MathF.Sin(exitAngle) * edgeDist);
+                    anchorPos = spawnPos;
+                }
+                else
+                {
+                    destinationPos = data.ExitPoint;
+                }
+
+                var entityType = def.ContactType == ContactType.Hostile
+                    ? SectorEntityType.HostileShip
+                    : SectorEntityType.NeutralShip;
+
+                string id = $"agent_{profile.AgentType}_{agentIndex:D2}";
+                agentIndex++;
+
+                var dir = (destinationPos - spawnPos).Normalized();
+                var initialVelocity = dir * def.BaseSpeed;
+                if (profile.InitialMode is AgentBehaviorMode.Patrol or AgentBehaviorMode.Guard)
+                    initialVelocity = new Vector3(def.BaseSpeed * 0.6f, 0f, 0f);
+
+                data.Entities.Add(new SectorEntity
+                {
+                    Id = id,
+                    Type = entityType,
+                    AssetId = "encounter_marker",
+                    WorldPosition = spawnPos,
+                    Scale = 1f,
+                    Radius = 3f,
+                    Tags = new[] { "contact", "mobile", "agent" },
+                    MapPresence = MapPresence.Point,
+                    DisplayName = def.DisplayName,
+                    ContactType = def.ContactType,
+                    ThreatLevel = def.ThreatLevel,
+                    Discovery = DiscoveryState.Hidden,
+                    IsMovable = true,
+                    Velocity = initialVelocity,
+                    AgentTypeId = profile.AgentType,
+                    InitialBehaviorMode = profile.InitialMode,
+                    AnchorPosition = anchorPos,
+                    DestinationPosition = destinationPos,
+                });
+            }
+        }
     }
 
     // ── Entity creation helpers ─────────────────────────────────────
@@ -426,7 +613,66 @@ public class SectorGenerator
         return true;
     }
 
-    private static void ApplyMarkerDefaults(SectorEntity entity, AssetDefinition def)
+    private void ApplyPoiMarkerVariantDefaults(SectorEntity entity, AssetDefinition def)
+    {
+        entity.ContactType = ContactType.Anomaly;
+        entity.ThreatLevel = 1;
+
+        string blueprintId = ExtractBlueprintIdFromTags(def.Tags);
+        var bp = !string.IsNullOrEmpty(blueprintId)
+            ? PoiBlueprintCatalog.GetOrNull(blueprintId) : null;
+
+        if (bp != null)
+        {
+            entity.PoiType = bp.Id;
+            entity.DisplayName = bp.DisplayName;
+
+            if (bp.RewardProfiles.Length > 0)
+                entity.PoiRewardProfile = RollRewardProfile(bp);
+            if (bp.TrapChance > 0 && NextFloat() < bp.TrapChance)
+            {
+                entity.PoiHasTrap = true;
+                var trapProfile = bp.RewardProfiles.FirstOrDefault(p => p.IsTrap);
+                if (trapProfile != null)
+                    entity.PoiRewardProfile = trapProfile.ProfileId;
+            }
+        }
+        else
+        {
+            entity.DisplayName = def.DisplayName;
+        }
+
+        entity.PreRevealed = false;
+        entity.Discovery = DiscoveryState.Hidden;
+    }
+
+    private string RollRewardProfile(PoiBlueprint bp)
+    {
+        var nonTrap = bp.RewardProfiles.Where(p => !p.IsTrap).ToArray();
+        if (nonTrap.Length == 0) return "";
+        float total = nonTrap.Sum(p => p.Weight);
+        float roll = NextFloat() * total;
+        float accum = 0;
+        foreach (var p in nonTrap)
+        {
+            accum += p.Weight;
+            if (roll <= accum) return p.ProfileId;
+        }
+        return nonTrap[^1].ProfileId;
+    }
+
+    private static string ExtractBlueprintIdFromTags(string[] tags)
+    {
+        const string prefix = "poi_blueprint:";
+        foreach (var t in tags)
+        {
+            if (t.StartsWith(prefix))
+                return t[prefix.Length..];
+        }
+        return "";
+    }
+
+    private void ApplyMarkerDefaults(SectorEntity entity, AssetDefinition def)
     {
         switch (def.Category)
         {
@@ -440,16 +686,18 @@ public class SectorGenerator
                 entity.DisplayName = "Ressourcensignal";
                 entity.ContactType = ContactType.Anomaly;
                 entity.ThreatLevel = 1;
+                entity.PreRevealed = false;
+                entity.Discovery = DiscoveryState.Hidden;
                 break;
             case AssetCategory.LootMarker:
                 entity.DisplayName = "Ladungsrest";
                 entity.ContactType = ContactType.Unknown;
                 entity.ThreatLevel = 1;
+                entity.PreRevealed = false;
+                entity.Discovery = DiscoveryState.Hidden;
                 break;
             case AssetCategory.PoiMarker:
-                entity.DisplayName = "Unidentifizierte Anomalie";
-                entity.ContactType = ContactType.Anomaly;
-                entity.ThreatLevel = 2;
+                ApplyPoiMarkerVariantDefaults(entity, def);
                 break;
             case AssetCategory.UtilityNode:
                 entity.DisplayName = "Versorgungsknoten";

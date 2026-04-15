@@ -1,5 +1,7 @@
 using System;
 using System.Text.Json;
+using SpacedOut.Poi;
+using SpacedOut.Shared;
 using SpacedOut.State;
 
 namespace SpacedOut.Commands.Handlers;
@@ -22,6 +24,9 @@ public class GunnerCommandHandler
             CommandNames.CeaseFire => HandleCeaseFire(),
             CommandNames.SetWeaponMode => HandleSetWeaponMode(data),
             CommandNames.SetDefensiveMode => HandleSetDefensiveMode(data),
+            CommandNames.SetAutofire => HandleSetAutofire(data),
+            CommandNames.SetToolMode => HandleSetToolMode(data),
+            CommandNames.DrillTarget => HandleDrillTarget(data),
             _ => false,
         };
     }
@@ -35,6 +40,15 @@ public class GunnerCommandHandler
         if (contact.IsDestroyed) return false;
 
         var gunner = _ctx.State.Gunner;
+        if (gunner.Tool == ToolMode.Mining)
+        {
+            if (!GunnerContactRules.IsDrillablePoiForGunnerList(contact)) return false;
+        }
+        else if (!GunnerContactRules.IsSelectableForCombat(contact))
+        {
+            return false;
+        }
+
         if (gunner.SelectedTargetId == contactId) return true;
 
         gunner.SelectedTargetId = contactId;
@@ -46,86 +60,11 @@ public class GunnerCommandHandler
 
     private bool HandleFire()
     {
-        var gunner = _ctx.State.Gunner;
-        if (string.IsNullOrEmpty(gunner.SelectedTargetId)) return false;
-        if (gunner.TargetLockProgress < 100f) return false;
-        if (gunner.FireCooldown > 0) return false;
-
-        var weaponSystem = _ctx.State.Ship.Systems[SystemId.Weapons];
-        if (weaponSystem.Status == SystemStatus.Offline) return false;
-        if (weaponSystem.Heat >= ShipSystem.CriticalHeatThreshold) return false;
-
-        var contact = _ctx.State.Contacts.Find(c => c.Id == gunner.SelectedTargetId);
-        if (contact == null || contact.IsDestroyed) return false;
-
-        float damage = CalculateDamage(contact);
-        contact.HitPoints = Math.Max(0, contact.HitPoints - damage);
-
-        float heatPerShot = gunner.Mode == WeaponMode.Precision
-            ? GunnerState.PrecisionHeatPerShot
-            : GunnerState.BarrageHeatPerShot;
-        weaponSystem.Heat = Math.Clamp(weaponSystem.Heat + heatPerShot, 0, ShipSystem.MaxHeat);
-
-        float fireInterval = gunner.Mode == WeaponMode.Precision
-            ? GunnerState.PrecisionFireInterval
-            : GunnerState.BarrageFireInterval;
-        gunner.FireCooldown = fireInterval;
-
-        _ctx.AddLog("Gunner", $"Feuer auf {contact.DisplayName}: {damage:F0} Schaden (Heat: {weaponSystem.Heat:F0}°)");
-
-        if (contact.HitPoints <= 0)
-        {
-            contact.IsDestroyed = true;
-            contact.IsTargetingPlayer = false;
-            gunner.SelectedTargetId = null;
-            gunner.TargetLockProgress = 0;
-            _ctx.AddLog("Gunner", $"{contact.DisplayName} zerstört!");
-        }
+        if (!GunnerFireAction.TryExecuteFire(_ctx.State))
+            return false;
 
         _ctx.EmitStateChanged();
         return true;
-    }
-
-    private float CalculateDamage(Contact contact)
-    {
-        var gunner = _ctx.State.Gunner;
-        var ship = _ctx.State.Ship;
-
-        float baseDamage = gunner.Mode == WeaponMode.Precision
-            ? GunnerState.PrecisionBaseDamage
-            : GunnerState.BarrageBaseDamage;
-
-        float energyFactor = ship.Energy.Weapons / 25f;
-        float statusMult = ship.Systems[SystemId.Weapons].GetHeatEfficiencyMultiplier();
-
-        float dx = contact.PositionX - ship.PositionX;
-        float dy = contact.PositionY - ship.PositionY;
-        float dist = MathF.Sqrt(dx * dx + dy * dy);
-        float distanceFactor = gunner.Mode == WeaponMode.Precision
-            ? Math.Clamp(300f / (dist + 50f), 0.3f, 1.5f)
-            : Math.Clamp(150f / (dist + 30f), 0.2f, 1.8f);
-
-        float flightModeMult = ship.FlightMode switch
-        {
-            FlightMode.Approach => 1.2f,
-            FlightMode.Cruise => 1f,
-            FlightMode.Evasive => 0.6f,
-            FlightMode.Hold => 1.1f,
-            _ => 1f,
-        };
-
-        float designationBonus = contact.IsDesignated ? 1.25f : 1f;
-        float weaknessBonus = contact.HasWeakness ? 1.5f : 1f;
-
-        float engagementMult = _ctx.State.Engagement switch
-        {
-            EngagementRule.Aggressive => 1.2f,
-            EngagementRule.Defensive => 0.8f,
-            _ => 1f,
-        };
-
-        return baseDamage * energyFactor * statusMult * distanceFactor
-            * flightModeMult * designationBonus * weaknessBonus * engagementMult;
     }
 
     private bool HandleCeaseFire()
@@ -133,6 +72,7 @@ public class GunnerCommandHandler
         var gunner = _ctx.State.Gunner;
         gunner.SelectedTargetId = null;
         gunner.TargetLockProgress = 0;
+        gunner.IsAutofire = false;
         _ctx.AddLog("Gunner", "Feuer eingestellt");
         _ctx.EmitStateChanged();
         return true;
@@ -157,5 +97,76 @@ public class GunnerCommandHandler
         _ctx.AddLog("Gunner", enabled ? "Defensivfeuer aktiviert" : "Defensivfeuer deaktiviert");
         _ctx.EmitStateChanged();
         return true;
+    }
+
+    private bool HandleSetAutofire(JsonElement data)
+    {
+        bool enabled = data.GetProperty("enabled").GetBoolean();
+        _ctx.State.Gunner.IsAutofire = enabled;
+        _ctx.AddLog("Gunner", enabled ? "Autofeuer: AN" : "Autofeuer: AUS");
+        _ctx.EmitStateChanged();
+        return true;
+    }
+
+    private bool HandleSetToolMode(JsonElement data)
+    {
+        string modeStr = data.GetProperty("mode").GetString() ?? "";
+        if (!Enum.TryParse<ToolMode>(modeStr, true, out var mode)) return false;
+
+        var gunner = _ctx.State.Gunner;
+        gunner.Tool = mode;
+
+        if (mode == ToolMode.Mining)
+        {
+            gunner.SelectedTargetId = null;
+            gunner.TargetLockProgress = 0;
+            gunner.IsAutofire = false;
+        }
+        else
+        {
+            StopDrilling(gunner);
+        }
+
+        _ctx.AddLog("Gunner", mode == ToolMode.Mining
+            ? "Werkzeugmodus: MINING (Bohrer aktiv)"
+            : "Werkzeugmodus: COMBAT (Waffen aktiv)");
+        _ctx.EmitStateChanged();
+        return true;
+    }
+
+    private bool HandleDrillTarget(JsonElement data)
+    {
+        var gunner = _ctx.State.Gunner;
+        if (gunner.Tool != ToolMode.Mining) return false;
+
+        string contactId = data.GetProperty("contact_id").GetString() ?? "";
+        var contact = _ctx.State.Contacts.Find(c => c.Id == contactId);
+        if (contact == null) return false;
+        if (string.IsNullOrEmpty(contact.PoiType)) return false;
+        if (contact.PoiPhase != PoiPhase.Analyzed) return false;
+
+        var bp = PoiBlueprintCatalog.GetOrNull(contact.PoiType);
+        if (bp == null || !bp.RequiresDrill) return false;
+
+        float dx = contact.PositionX - _ctx.State.Ship.PositionX;
+        float dy = contact.PositionY - _ctx.State.Ship.PositionY;
+        float dist = MathF.Sqrt(dx * dx + dy * dy);
+        if (dist > bp.DrillRange) return false;
+
+        StopDrilling(gunner);
+
+        gunner.DrillTargetId = contactId;
+        contact.PoiDrilling = true;
+        _ctx.AddLog("Gunner", $"Bohrung gestartet: {contact.DisplayName}");
+        _ctx.EmitStateChanged();
+        return true;
+    }
+
+    private void StopDrilling(GunnerState gunner)
+    {
+        if (string.IsNullOrEmpty(gunner.DrillTargetId)) return;
+        var prev = _ctx.State.Contacts.Find(c => c.Id == gunner.DrillTargetId);
+        if (prev != null) prev.PoiDrilling = false;
+        gunner.DrillTargetId = null;
     }
 }

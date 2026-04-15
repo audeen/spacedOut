@@ -60,6 +60,29 @@ public static class MissionTemplateCatalog
 
     private static IEnumerable<MissionTemplate> CreateStoryPlaceholders()
     {
+        yield return new MissionTemplate
+        {
+            Id = "tutorial_blindsprung",
+            Title = "Blindsprung",
+            Type = MissionType.Story,
+            Category = "tutorial",
+            Description = "Notsprung abgeschlossen. Position: unbekanntes Asteroidenfeld. "
+                + "Systeme durch Sprung\u00fcberlastung beeintr\u00e4chtigt. "
+                + "Langreichweiten-Sensoren haben w\u00e4hrend des Sprungs ein Navigationsrelais erfasst \u2014 grobe Position bekannt. "
+                + "Ohne die Koordinaten dieses Relais ist ein kontrollierter Absprung unm\u00f6glich. "
+                + "Scannen Sie das Relais und navigieren Sie zum Sektorausgang. "
+                + "Achtung: Fragment\u00e4re Sensordaten deuten auf Schiffsverkehr im Sektor hin \u2014 Zuordnung unklar.",
+            Objectives = new List<string>
+            {
+                "Navigationsrelais scannen",
+                "Sektorausgang erreichen",
+            },
+            Twist = "",
+            Risk = 2,
+            Reward = "Sprungkoordinaten",
+            StoryFunction = "tutorial",
+        };
+
         for (var i = 1; i <= 3; i++)
         {
             yield return new MissionTemplate

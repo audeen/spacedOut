@@ -32,7 +32,6 @@ public static class CommandNames
     // Tactical
     public const string ScanContact = "ScanContact";
     public const string MarkContact = "MarkContact";
-    public const string SetThreatPriority = "SetThreatPriority";
     public const string RaiseTacticalWarning = "RaiseTacticalWarning";
     public const string ToggleTacticalOnMainScreen = "ToggleTacticalOnMainScreen";
     public const string DeployProbe = "DeployProbe";
@@ -43,10 +42,20 @@ public static class CommandNames
     public const string PinContact = "PinContact";
     public const string UnpinContact = "UnpinContact";
 
+    // Tactical – POI
+    public const string AnalyzePoi = "AnalyzePoi";
+
+    // Engineer – POI
+    public const string ActivateTractor = "ActivateTractor";
+    public const string ExtractResource = "ExtractResource";
+
     // Gunner
     public const string SelectTarget = "SelectTarget";
     public const string Fire = "Fire";
     public const string CeaseFire = "CeaseFire";
     public const string SetWeaponMode = "SetWeaponMode";
     public const string SetDefensiveMode = "SetDefensiveMode";
+    public const string SetAutofire = "SetAutofire";
+    public const string SetToolMode = "SetToolMode";
+    public const string DrillTarget = "DrillTarget";
 }

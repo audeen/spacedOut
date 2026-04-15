@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text.Json;
+using SpacedOut.Poi;
 using SpacedOut.Run;
 using SpacedOut.State;
 
@@ -26,6 +27,8 @@ public class EngineerCommandHandler
             CommandNames.CoolantPulse => HandleCoolantPulse(data),
             CommandNames.OverchargeSystem => HandleOvercharge(data),
             CommandNames.ConvertSparesToAmmo => HandleConvertSparesToAmmo(),
+            CommandNames.ActivateTractor => HandleActivateTractor(data),
+            CommandNames.ExtractResource => HandleExtractResource(data),
             _ => false,
         };
     }
@@ -133,5 +136,63 @@ public class EngineerCommandHandler
     private bool HandleConvertSparesToAmmo()
     {
         return false;
+    }
+
+    private bool HandleActivateTractor(JsonElement data)
+    {
+        return StartPoiExtraction(data, tractor: true);
+    }
+
+    private bool HandleExtractResource(JsonElement data)
+    {
+        return StartPoiExtraction(data, tractor: false);
+    }
+
+    private bool StartPoiExtraction(JsonElement data, bool tractor)
+    {
+        string contactId = data.GetProperty("contact_id").GetString() ?? "";
+        var contact = _ctx.State.Contacts.Find(c => c.Id == contactId);
+        if (contact == null) return false;
+        if (string.IsNullOrEmpty(contact.PoiType)) return false;
+
+        var bp = PoiBlueprintCatalog.GetOrNull(contact.PoiType);
+        if (bp == null || !bp.RequiresExtraction) return false;
+        if (tractor != bp.UsesTractorBeam) return false;
+
+        bool readyForExtract = bp.RequiresDrill
+            ? contact.PoiPhase == PoiPhase.Opened
+            : contact.PoiPhase == PoiPhase.Analyzed;
+        if (!readyForExtract) return false;
+
+        float dx = contact.PositionX - _ctx.State.Ship.PositionX;
+        float dy = contact.PositionY - _ctx.State.Ship.PositionY;
+        float dist = MathF.Sqrt(dx * dx + dy * dy);
+        if (dist > bp.ExtractRange) return false;
+
+        StopAnyExtraction();
+
+        contact.PoiExtracting = true;
+        contact.PoiPhase = PoiPhase.Extracting;
+        contact.PoiProgress = 0;
+        string tool = tractor ? "Traktorstrahl" : "Extraktion";
+        _ctx.AddLog("Engineer", $"{tool} aktiviert: {contact.DisplayName}");
+        _ctx.EmitStateChanged();
+        return true;
+    }
+
+    private void StopAnyExtraction()
+    {
+        foreach (var c in _ctx.State.Contacts)
+        {
+            if (c.PoiExtracting)
+            {
+                c.PoiExtracting = false;
+                if (c.PoiPhase == PoiPhase.Extracting)
+                {
+                    c.PoiPhase = c.PoiProgress > 0 ? PoiPhase.Opened : PoiPhase.Analyzed;
+                    c.PoiProgress = 0;
+                }
+            }
+        }
     }
 }

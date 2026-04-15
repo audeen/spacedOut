@@ -23,7 +23,6 @@ public partial class TacticalDisplay : Control
     private static readonly Color AltLowColor = new(0.3f, 0.55f, 1.0f, 0.9f);
     private static readonly Color FogColor = new(0.03f, 0.05f, 0.12f, 0.55f);
     private static readonly Color ProbeRingColor = new(0.2f, 0.9f, 0.4f, 0.4f);
-    private static readonly Color GhostColor = new(0.5f, 0.6f, 0.7f, 0.35f);
     private static readonly Color VelocityPipColor = new(0.9f, 0.85f, 0.2f, 0.6f);
     private static readonly Color NearfieldColor = new(0.25f, 0.4f, 0.55f, 0.35f);
     private static readonly Color ZoneBorderColor = new(1f, 1f, 1f, 0.2f);
@@ -84,7 +83,6 @@ public partial class TacticalDisplay : Control
         DrawProbes(centerX, centerY, radarScale);
         DrawShipMarker(centerX, centerY);
         DrawSectorContacts(centerX, centerY, radarScale, sensorRange);
-        DrawContacts(centerX, centerY, radarScale, sensorRange);
     }
 
     // ── Sector entities from SectorData ─────────────────────────────
@@ -104,11 +102,19 @@ public partial class TacticalDisplay : Control
             float dx = mapPos.X - _state.Ship.PositionX;
             float dy = mapPos.Y - _state.Ship.PositionY;
             float dz = mapPos.Z - shipAlt;
+
+            if (entity.Discovery == DiscoveryState.Detected && !entity.PreRevealed && !entity.RadarShowDetectedInFullRange && !entity.IsMovable)
+            {
+                float dist2d = MathF.Sqrt(dx * dx + dy * dy);
+                if (dist2d > sensorRange / 3f) continue;
+            }
+
             var basePos = new Vector2(cx + dx * radarScale, cy + dy * radarScale);
 
             var color = ThemeColors.GetContactColor(entity.ContactType);
             bool isDetectedOnly = entity.Discovery == DiscoveryState.Detected;
             float dotAlpha = isDetectedOnly ? 0.5f : 1f;
+            bool showIdentifiedName = entity.Discovery == DiscoveryState.Scanned || entity.PreRevealed;
 
             if (MathF.Abs(dz) > 5f)
                 DrawAltStem(basePos, dz, dotAlpha);
@@ -122,19 +128,19 @@ public partial class TacticalDisplay : Control
                     ScanArcColor, 1.5f);
             }
 
-            if (!string.IsNullOrEmpty(entity.DisplayName) && !isDetectedOnly)
-            {
-                DrawString(ThemeDB.FallbackFont, basePos + new Vector2(0, -14),
-                    entity.DisplayName, HorizontalAlignment.Center, -1, 9,
-                    new Color(1, 1, 1, 0.7f * dotAlpha));
-            }
+            string labelText = showIdentifiedName && !string.IsNullOrEmpty(entity.DisplayName)
+                ? entity.DisplayName
+                : "???";
+            DrawString(ThemeDB.FallbackFont, basePos + new Vector2(0, -14),
+                labelText, HorizontalAlignment.Center, -1, 9,
+                new Color(1, 1, 1, 0.7f * dotAlpha));
 
             if (entity.ThreatLevel > 0 && entity.Discovery == DiscoveryState.Scanned)
             {
-                var threatColor = entity.ThreatLevel > 7 ? ThemeColors.ContactHostile :
-                    entity.ThreatLevel > 4 ? ThemeColors.ContactUnknown : ThemeColors.ContactNeutral;
+                var threatColor = entity.ThreatLevel >= 5 ? ThemeColors.ContactHostile :
+                    entity.ThreatLevel >= 3 ? ThemeColors.ContactUnknown : ThemeColors.ContactNeutral;
                 DrawString(ThemeDB.FallbackFont, basePos + new Vector2(6, 3),
-                    $"T{entity.ThreatLevel:F0}", HorizontalAlignment.Left, -1, 8, threatColor);
+                    $"T{entity.ThreatLevel}", HorizontalAlignment.Left, -1, 8, threatColor);
             }
 
             float dist3d = MathF.Sqrt(dx * dx + dy * dy + dz * dz);
@@ -191,7 +197,7 @@ public partial class TacticalDisplay : Control
 
     private void DrawResourceZones(float cx, float cy, float radarScale)
     {
-        if (_sector == null || _state == null) return;
+        if (!GameFeatures.ResourceZonesEnabled || _sector == null || _state == null) return;
 
         foreach (var zone in _sector.ResourceZones)
         {
@@ -215,84 +221,6 @@ public partial class TacticalDisplay : Control
                     zone.ResourceType.ToString(), HorizontalAlignment.Center, -1, 8,
                     new Color(zone.MapColor, 0.5f));
             }
-        }
-    }
-
-    // ── Legacy contacts from GameState ──────────────────────────────
-
-    private void DrawContacts(float cx, float cy, float radarScale, float sensorRange)
-    {
-        if (_state == null || _sector != null) return;
-        float shipAlt = _state.Ship.PositionZ;
-
-        foreach (var c in _state.Contacts)
-        {
-            if (c.Discovery == DiscoveryState.Hidden) continue;
-
-            bool isGhost = c.Discovery == DiscoveryState.Probed;
-            float displayX = isGhost ? c.SnapshotX : c.PositionX;
-            float displayY = isGhost ? c.SnapshotY : c.PositionY;
-            float displayZ = isGhost ? c.SnapshotZ : c.PositionZ;
-
-            float dx = displayX - _state.Ship.PositionX;
-            float dy = displayY - _state.Ship.PositionY;
-            float dz = displayZ - shipAlt;
-            var basePos = new Vector2(cx + dx * radarScale, cy + dy * radarScale);
-
-            var color = isGhost ? GhostColor : ThemeColors.GetContactColor(c.Type);
-            float dotAlpha = isGhost ? 0.4f : 1f;
-
-            if (MathF.Abs(dz) > 5f)
-                DrawAltStem(basePos, dz, dotAlpha);
-
-            if (c.ScanProgress > 0 && c.ScanProgress < 100)
-            {
-                float arc = (c.ScanProgress / 100f) * MathF.PI * 2f;
-                DrawArc(basePos, 9f, -MathF.PI / 2f, -MathF.PI / 2f + arc, 16,
-                    ScanArcColor, 1.5f);
-                if (c.IsScanning)
-                    DrawArc(basePos, 12f, -MathF.PI / 2f, -MathF.PI / 2f + arc, 16,
-                        new Color(ScanArcColor, 0.2f), 3f);
-            }
-
-            float dotSize = isGhost ? 3f : 4f;
-            DrawCircle(basePos, dotSize, new Color(color, dotAlpha));
-
-            if (c.IsScanning)
-            {
-                float pulse = 5f + MathF.Sin(_animPulse) * 3f;
-                DrawArc(basePos, pulse + 4f, 0, MathF.PI * 2f, 20,
-                    new Color(color, 0.35f), 1f);
-            }
-
-            if (isGhost)
-            {
-                DrawString(ThemeDB.FallbackFont, basePos + new Vector2(0, -14),
-                    "SNAPSHOT", HorizontalAlignment.Center, -1, 7,
-                    new Color(0.7f, 0.8f, 0.6f, 0.5f));
-            }
-            else if (!string.IsNullOrEmpty(c.DisplayName) && c.Discovery == DiscoveryState.Scanned)
-            {
-                DrawString(ThemeDB.FallbackFont, basePos + new Vector2(0, -14),
-                    c.DisplayName, HorizontalAlignment.Center, -1, 9,
-                    new Color(1, 1, 1, 0.7f));
-            }
-
-            if (c.ThreatLevel > 0 && c.Discovery == DiscoveryState.Scanned)
-            {
-                var threatColor = c.ThreatLevel > 7 ? ThemeColors.ContactHostile :
-                    c.ThreatLevel > 4 ? ThemeColors.ContactUnknown : ThemeColors.ContactNeutral;
-                DrawString(ThemeDB.FallbackFont, basePos + new Vector2(dotSize + 3, 3),
-                    $"T{c.ThreatLevel:F0}", HorizontalAlignment.Left, -1, 8, threatColor);
-            }
-
-            float dist3d = MathF.Sqrt(dx * dx + dy * dy + dz * dz);
-            DrawString(ThemeDB.FallbackFont, basePos + new Vector2(0, 16),
-                $"{dist3d:F0}", HorizontalAlignment.Center, -1, 7,
-                new Color(1, 1, 1, 0.3f * dotAlpha));
-
-            if (!isGhost)
-                DrawVelocityPip(basePos, c, radarScale);
         }
     }
 
@@ -405,29 +333,6 @@ public partial class TacticalDisplay : Control
         DrawCircle(new Vector2(cx, cy), 3f, ShipColor);
         DrawArc(new Vector2(cx, cy), 7f, 0, MathF.PI * 2f, 16,
             new Color(ShipColor, 0.3f), 1f);
-    }
-
-    private void DrawVelocityPip(Vector2 contactPos, Contact c, float radarScale)
-    {
-        float vx = c.VelocityX;
-        float vy = c.VelocityY;
-        if (MathF.Abs(vx) < 0.1f && MathF.Abs(vy) < 0.1f) return;
-
-        var velDir = new Vector2(vx, vy);
-        float speed = velDir.Length();
-        velDir /= speed;
-        float lineLen = MathF.Min(speed * 15f * radarScale, 60f);
-        DrawLine(contactPos, contactPos + velDir * lineLen,
-            new Color(VelocityPipColor, 0.3f), 1f);
-
-        for (int i = 1; i <= 3; i++)
-        {
-            float t = i * 5f;
-            var pipPos = contactPos + new Vector2(vx * t * radarScale, vy * t * radarScale);
-            float pipSize = 2f - i * 0.4f;
-            float pipAlpha = 0.7f - i * 0.15f;
-            DrawCircle(pipPos, MathF.Max(pipSize, 0.8f), new Color(VelocityPipColor, pipAlpha));
-        }
     }
 
     private float CalculateSensorRange()

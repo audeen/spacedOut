@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using Godot;
+using SpacedOut.Agents;
 using SpacedOut.Mission;
 using SpacedOut.Run;
 using SpacedOut.State;
@@ -10,7 +12,10 @@ namespace SpacedOut.Orchestration;
 
 public class DebugCommandHandler
 {
+    private static int _debugAgentSpawnSeq;
+
     private readonly Dictionary<string, Action> _commands = new();
+    private readonly GameState _state;
 
     public DebugCommandHandler(
         GameState state,
@@ -21,6 +26,7 @@ public class DebugCommandHandler
         Action<string> onBiomeChanged,
         Action? broadcastStateUpdates = null)
     {
+        _state = state;
         var dbg = state.Debug;
         var ship = state.Ship;
         var gun = state.Gunner;
@@ -164,6 +170,12 @@ public class DebugCommandHandler
         };
         _commands["reveal_all_resource_zones"] = () =>
         {
+            if (!GameFeatures.ResourceZonesEnabled)
+            {
+                GD.Print("[Debug] Ressourcenzonen sind deaktiviert (GameFeatures.ResourceZonesEnabled).");
+                return;
+            }
+
             var sector = missionOrch.CurrentSector;
             if (sector == null)
             {
@@ -191,7 +203,7 @@ public class DebugCommandHandler
                 PositionX = ship.PositionX + GD.RandRange(100, 300),
                 PositionY = ship.PositionY + GD.RandRange(100, 300),
                 PositionZ = ship.PositionZ,
-                ThreatLevel = 8,
+                ThreatLevel = 4,
                 Discovery = DiscoveryState.Scanned,
                 IsVisibleOnMainScreen = true,
                 ReleasedToNav = true,
@@ -317,10 +329,92 @@ public class DebugCommandHandler
 
     public void Execute(string command)
     {
+        const string spawnAgentPrefix = "spawn_agent:";
+        if (command.StartsWith(spawnAgentPrefix, StringComparison.Ordinal))
+        {
+            SpawnDebugAgent(command[spawnAgentPrefix.Length..]);
+            return;
+        }
+
         if (_commands.TryGetValue(command, out var action))
             action();
         else
             GD.PrintErr($"[Debug] Unbekannter Befehl: {command}");
+    }
+
+    private void SpawnDebugAgent(string agentTypeId)
+    {
+        if (!AgentDefinition.TryGet(agentTypeId, out var def))
+        {
+            GD.PrintErr($"[Debug] Unbekannter Agent-Typ: {agentTypeId}");
+            return;
+        }
+
+        var state = _state;
+        var ship = state.Ship;
+
+        float px = ship.PositionX + GD.RandRange(80, 280);
+        float py = ship.PositionY + GD.RandRange(80, 280);
+        float pz = ship.PositionZ;
+
+        int serial = Interlocked.Increment(ref _debugAgentSpawnSeq);
+        var id = $"debug_agent_{agentTypeId}_{serial}";
+
+        var contact = new Contact
+        {
+            Id = id,
+            Type = def.ContactType,
+            DisplayName = $"{def.DisplayName} ({serial})",
+            PositionX = px,
+            PositionY = py,
+            PositionZ = pz,
+            ThreatLevel = def.ThreatLevel,
+            Discovery = DiscoveryState.Scanned,
+            IsVisibleOnMainScreen = true,
+            ReleasedToNav = true,
+            HitPoints = def.HitPoints,
+            MaxHitPoints = def.HitPoints,
+            AttackDamage = def.AttackDamage,
+            AttackInterval = def.AttackInterval,
+            AttackRange = def.AttackRange,
+        };
+
+        if (def.ContactType is ContactType.Friendly or ContactType.Neutral)
+            contact.PreRevealed = true;
+
+        float anchorX = px;
+        float anchorY = py;
+        float anchorZ = pz;
+        float destX = px;
+        float destY = py;
+
+        if (def.InitialMode == AgentBehaviorMode.Transit)
+        {
+            float angle = GD.Randf() * Mathf.Tau;
+            destX = 500f + MathF.Cos(angle) * 420f;
+            destY = 500f + MathF.Sin(angle) * 420f;
+        }
+
+        contact.Agent = new AgentState
+        {
+            AgentType = agentTypeId,
+            Mode = def.InitialMode,
+            AnchorX = anchorX,
+            AnchorY = anchorY,
+            AnchorZ = anchorZ,
+            DestinationX = destX,
+            DestinationY = destY,
+            DetectionRadius = def.DetectionRadius,
+            FleeThreshold = def.FleeThreshold,
+            BaseSpeed = def.BaseSpeed,
+            WeaponAccuracy = def.WeaponAccuracy,
+            ShieldAbsorption = def.ShieldAbsorption,
+            OrbitAngle = px * 0.1f,
+            PhaseOffset = py * 0.07f,
+        };
+
+        state.Contacts.Add(contact);
+        GD.Print($"[Debug] NPC-Agent gespawnt: {def.DisplayName} ({agentTypeId})");
     }
 
     private static void SetTimeScale(float scale)
