@@ -23,6 +23,49 @@ let waypointAltitude = 500;
 let navSensorRange = 500;
 let selectedNavContactId = null;
 let navAnimFrame = null;
+/** Synced from server (CaptainNav target_tracking). */
+let targetTracking = { mode: 'None', contact_id: '', range: 200, orbit_clockwise: true };
+/** True while dragging the orbit/range slider — prevents state ticks from resetting the thumb. */
+let navTrackingRangeDragging = false;
+/** True while toggling orbit direction — prevents server sync from fighting the checkbox. */
+let navOrbitCwAdjusting = false;
+let briefingShown = false;
+/** Nach Anzeige im Einsatzplan unterdrückt Vollbild-Briefing bei mission_started. */
+let briefingShownFromRunMapPanel = false;
+/** Von mission_started gepuffert, bis „Zum Briefing“ nach Entscheidungs-Auflösung. */
+let pendingMissionBriefingText = null;
+
+function isDecisionResolutionOverlayOpen() {
+    const el = document.getElementById('decision-resolution-overlay');
+    return !!(el && !el.classList.contains('hidden'));
+}
+
+function syncDecisionResolutionCta() {
+    const btn = document.getElementById('decision-resolution-cta');
+    if (!btn) return;
+    const has = pendingMissionBriefingText != null && String(pendingMissionBriefingText).length > 0;
+    btn.textContent = has ? 'Zum Briefing' : 'Verstanden';
+}
+
+/** Nach Lesen der Entscheidungs-Auflösung: ggf. Missionsbriefing, sonst nur schließen. */
+function onDecisionResolutionContinue() {
+    const dec = document.getElementById('decision-resolution-overlay');
+    if (dec) dec.classList.add('hidden');
+    client.resetDecisionResolutionOverlayChrome();
+
+    const brief = pendingMissionBriefingText;
+    pendingMissionBriefingText = null;
+    syncDecisionResolutionCta();
+
+    if (brief != null && String(brief).length > 0) {
+        briefingShown = true;
+        client.resetBriefingOverlayChrome();
+        const el = document.getElementById('briefing-text');
+        if (el) el.textContent = brief;
+        const ov = document.getElementById('briefing-overlay');
+        if (ov) ov.classList.remove('hidden');
+    }
+}
 
 // Zoom & pan
 let zoom = 1.0;
@@ -116,7 +159,38 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     setupWaypointListLongPress();
+    setupNavTrackingInteraction();
 });
+
+function setupNavTrackingInteraction() {
+    const rangeEl = document.getElementById('nav-tracking-range');
+    if (rangeEl) {
+        const endRangeDrag = () => {
+            if (!navTrackingRangeDragging) return;
+            navTrackingRangeDragging = false;
+            syncNavTrackingUI();
+        };
+        rangeEl.addEventListener('pointerdown', () => {
+            navTrackingRangeDragging = true;
+        });
+        rangeEl.addEventListener('pointerup', endRangeDrag);
+        rangeEl.addEventListener('pointercancel', endRangeDrag);
+        window.addEventListener('pointerup', endRangeDrag);
+    }
+    const cwEl = document.getElementById('nav-orbit-cw');
+    if (cwEl) {
+        const endCwAdjust = () => {
+            if (!navOrbitCwAdjusting) return;
+            navOrbitCwAdjusting = false;
+            syncNavTrackingUI();
+        };
+        cwEl.addEventListener('pointerdown', () => {
+            navOrbitCwAdjusting = true;
+        });
+        cwEl.addEventListener('pointerup', endCwAdjust);
+        cwEl.addEventListener('pointercancel', endCwAdjust);
+    }
+}
 
 let listLongTimer = null;
 let listLongStart = null;
@@ -750,6 +824,23 @@ client.onState((msg) => {
     starMapOnMainScreen = d.star_map_on_main_screen || false;
     updateStarMapButton();
 
+    if (d.target_tracking) {
+        const next = {
+            mode: d.target_tracking.mode || 'None',
+            contact_id: d.target_tracking.contact_id || '',
+            range: typeof d.target_tracking.range === 'number' ? d.target_tracking.range : 200,
+            orbit_clockwise: d.target_tracking.orbit_clockwise !== false,
+        };
+        if (navTrackingRangeDragging) {
+            next.range = targetTracking.range;
+        }
+        if (navOrbitCwAdjusting) {
+            next.orbit_clockwise = targetTracking.orbit_clockwise;
+        }
+        targetTracking = next;
+    }
+    syncNavTrackingUI();
+
     updateFlightModeButtons();
     renderWaypoints();
     if (selectedNavContactId) updateNavContactPanel();
@@ -794,11 +885,130 @@ client.onState((msg) => {
         missionActive = false;
         showRunMap();
     }
+
+    updateDockPanel(d);
+    updateRunResourcesPanel(d);
 });
+
+function updateRunResourcesPanel(d) {
+    const panel = document.getElementById('run-resources-panel');
+    if (!panel) return;
+    if (!d.run_active || !d.run_resources) {
+        panel.style.display = 'none';
+        return;
+    }
+    const res = d.run_resources;
+    panel.style.display = 'block';
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v ?? 0; };
+    set('rr-parts', res.SpareParts ?? 0);
+    set('rr-data', res.ScienceData ?? 0);
+    set('rr-fuel', res.Fuel ?? 0);
+    set('rr-credits', res.Credits ?? 0);
+
+    const perkRow = document.getElementById('rr-perk-row');
+    const perkEl = document.getElementById('rr-perk');
+    const perkName = d.perk_name || '';
+    if (perkRow && perkEl) {
+        if (perkName) {
+            perkRow.style.display = '';
+            perkEl.textContent = perkName;
+        } else {
+            perkRow.style.display = 'none';
+        }
+    }
+}
+
+function updateDockStock(d) {
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    if (!d.run_active || !d.run_resources) {
+        set('dock-stock-fuel', '—');
+        set('dock-stock-parts', '—');
+        set('dock-stock-data', '—');
+        set('dock-stock-credits', '—');
+        return;
+    }
+    const res = d.run_resources;
+    set('dock-stock-fuel', res.Fuel ?? 0);
+    set('dock-stock-parts', res.SpareParts ?? 0);
+    set('dock-stock-data', res.ScienceData ?? 0);
+    set('dock-stock-credits', res.Credits ?? 0);
+}
+
+function updateDockPanel(d) {
+    const panel = document.getElementById('dock-panel');
+    const statusLine = document.getElementById('dock-status-line');
+    const buyContainer = document.getElementById('dock-buy-container');
+    if (!panel || !statusLine || !buyContainer) return;
+
+    const dock = d.dock;
+    const docked = !!d.mission_docked;
+    if (!dock || dock.Available === false) {
+        panel.style.display = 'none';
+        return;
+    }
+
+    panel.style.display = 'block';
+    statusLine.style.fontSize = '12px';
+    statusLine.style.marginBottom = '8px';
+
+    if (docked) {
+        statusLine.textContent = `Angedockt — Rep 1 Ersatzteil = ${dock.HullPerPart} Hülle`;
+        statusLine.className = 'text-green';
+        buyContainer.style.display = 'block';
+        document.getElementById('dock-fuel-price').textContent = `${dock.FuelPrice} Cr / Einheit (Kauf)`;
+        document.getElementById('dock-fuel-sell-price').textContent = `${dock.FuelSellPrice} Cr / Einheit (Ankauf)`;
+        document.getElementById('dock-parts-price').textContent = `${dock.PartsPrice} Cr / Einheit (Kauf)`;
+        document.getElementById('dock-parts-sell-price').textContent = `${dock.PartsSellPrice} Cr / Einheit (Ankauf)`;
+        document.getElementById('dock-data-price').textContent = `${dock.DataPrice} Cr / Einheit (Kauf)`;
+        document.getElementById('dock-data-sell-price').textContent = `${dock.DataSellPrice} Cr / Einheit (Ankauf)`;
+        updateDockStock(d);
+    } else {
+        const dist = typeof d.dock_distance === 'number' ? d.dock_distance : -1;
+        const sl = d.speed_level ?? 2;
+        const range = dock.ProximityRange ?? 60;
+        const maxSpeed = dock.MaxSpeedLevel ?? 2;
+        let hint;
+        if (dist < 0) {
+            hint = 'Andockmast in diesem Sektor — anfliegen für Handel.';
+        } else if (dist > range) {
+            hint = `Andockmast: ${dist.toFixed(0)} m · Speed ${sl} — näher heran (≤${range} m).`;
+        } else if (sl > maxSpeed) {
+            hint = `Andockmast: ${dist.toFixed(0)} m · Speed ${sl} — zu schnell, auf ≤${maxSpeed} reduzieren.`;
+        } else {
+            hint = `Andockmast: ${dist.toFixed(0)} m · Speed ${sl} — Andocken läuft...`;
+        }
+        statusLine.textContent = hint;
+        statusLine.className = 'text-cyan';
+        buyContainer.style.display = 'none';
+    }
+}
+
+let _dockTradeLastKey = '';
+let _dockTradeLastAt = 0;
+
+function dockBuy(resource, qty) {
+    const key = `buy:${resource}:${qty}`;
+    const t = Date.now();
+    if (key === _dockTradeLastKey && t - _dockTradeLastAt < 450) return;
+    _dockTradeLastKey = key;
+    _dockTradeLastAt = t;
+    client.sendCommand('DockBuyResource', { resource, qty });
+}
+
+function dockSell(resource, qty) {
+    const key = `sell:${resource}:${qty}`;
+    const t = Date.now();
+    if (key === _dockTradeLastKey && t - _dockTradeLastAt < 450) return;
+    _dockTradeLastKey = key;
+    _dockTradeLastAt = t;
+    client.sendCommand('DockSellResource', { resource, qty });
+}
 
 client.on('paused', () => document.getElementById('paused-overlay').classList.remove('hidden'));
 client.on('resumed', () => document.getElementById('paused-overlay').classList.add('hidden'));
 client.on('mission_ended', (msg) => {
+    briefingShown = false;
+    briefingShownFromRunMapPanel = false;
     document.getElementById('mission-end').classList.remove('hidden');
     document.getElementById('mission-end-title').textContent = 'MISSION BEENDET';
     document.getElementById('mission-end-detail').textContent = `Ergebnis: ${msg.result}`;
@@ -845,6 +1055,10 @@ client.on('run_state_update', (msg) => {
     runMapData = msg.data;
     if (runMapData && runMapData.nodes && runMapData.nodes.length > 0 && !missionActive) {
         showRunMap();
+    }
+    if (selectedNodeId && runMapData) {
+        const updated = (runMapData.nodes || []).find(n => n.Id === selectedNodeId);
+        if (updated) showRunNodeInfo(updated);
     }
 });
 
@@ -899,17 +1113,17 @@ function updateRunMapResources() {
     document.getElementById('run-map-title').textContent =
         `EINSATZPLANUNG · ${runMapData.definition_id || ''}`;
     const visited = (runMapData.visited || []).length;
-    const total = (runMapData.nodes || []).filter(n => n.state !== 'Hidden').length;
+    const total = (runMapData.nodes || []).length;
     document.getElementById('run-map-subtitle').textContent =
         `Fortschritt: ${visited}/${total} Knoten · Tiefe: ${runMapData.current_depth ?? 0}`;
-    document.getElementById('resource-hull').textContent =
-        `Hull: ${res.Hull ?? 10}`;
     document.getElementById('resource-parts').textContent =
         `Ersatzteile: ${res.SpareParts ?? 0}`;
-    document.getElementById('resource-ammo').textContent =
-        `Munition: ${res.Ammo ?? 0}`;
     document.getElementById('resource-data').textContent =
         `Daten: ${res.ScienceData ?? 0}`;
+    document.getElementById('resource-fuel').textContent =
+        `Treibstoff: ${res.Fuel ?? 0}`;
+    document.getElementById('resource-credits').textContent =
+        `Credits: ${res.Credits ?? 0}`;
 }
 
 function startRunPulse() {
@@ -951,6 +1165,18 @@ function hexAlpha(color, alpha) {
     return color;
 }
 
+function computeActCount(nodes) {
+    let max = -1;
+    nodes.forEach(n => {
+        const id = n.Id || '';
+        if (id.length > 1 && id[0] === 'A' && id.charCodeAt(1) >= 48 && id.charCodeAt(1) <= 57) {
+            const v = id.charCodeAt(1) - 48;
+            if (v > max) max = v;
+        }
+    });
+    return max + 1;
+}
+
 function drawRunMap() {
     if (!runCtx || !runMapData) return;
     const w = runCanvas.width, h = runCanvas.height;
@@ -979,13 +1205,33 @@ function drawRunMap() {
     const nodeMap = {};
     nodes.forEach(n => { nodeMap[n.Id] = n; });
 
+    // Act bands (matches RunGenerator.yBand formula).
+    const actCount = computeActCount(nodes);
+    if (actCount > 0) {
+        const bandStep = 0.78 / actCount;
+        for (let act = 0; act < actCount; act++) {
+            const yStart = 0.06 + act * bandStep;
+            const yEnd = Math.min(0.94, yStart + bandStep);
+            const py = oy + yStart * mapH;
+            const ph = (yEnd - yStart) * mapH;
+            ctx.fillStyle = act % 2 === 0
+                ? 'rgba(0, 212, 232, 0.05)'
+                : 'rgba(77, 128, 242, 0.05)';
+            ctx.fillRect(ox - 8, py, mapW + 16, ph);
+            ctx.fillStyle = 'rgba(0, 212, 232, 0.55)';
+            ctx.font = '10px monospace';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'top';
+            ctx.fillText(`SEKTOR ${act + 1}`, 4, py + 4);
+        }
+    }
+
     // Edges
     nodes.forEach(node => {
-        if (node.state === 'Hidden') return;
         const from = runNodePos(node, ox, oy, mapW, mapH);
         (node.NextNodeIds || []).forEach(nextId => {
             const next = nodeMap[nextId];
-            if (!next || next.state === 'Hidden') return;
+            if (!next) return;
             const to = runNodePos(next, ox, oy, mapW, mapH);
 
             const onPath = node.state === 'Completed' &&
@@ -1010,101 +1256,143 @@ function drawRunMap() {
 
     // Nodes
     nodes.forEach(node => {
-        if (node.state === 'Hidden') return;
-
         const p = runNodePos(node, ox, oy, mapW, mapH);
-        const know = node.knowledge || 'Unknown';
-        const typeColor = RUN_TYPE_FILL[node.type] || '#606880';
-        let fill = typeColor;
-        let border = RUN_STATE_BORDER[node.state] || '#808090';
-        let radius = 18;
+        const know = node.knowledge || 'Silhouette';
 
-        switch (node.state) {
-            case 'Completed':
-                fill = hexAlpha(typeColor, 0.55);
-                border = '#2ee65a';
-                break;
-            case 'Failed':
-                fill = 'rgba(232, 48, 48, 0.45)';
-                border = '#e83030';
-                break;
-            case 'Reachable':
-                border = '#00d4e8';
-                radius = 20;
-                break;
-            case 'Locked':
-                border = '#e89020';
-                fill = hexAlpha(typeColor, 0.5);
-                break;
-            case 'Visible':
-                border = '#606880';
-                fill = hexAlpha(typeColor, 0.42);
-                break;
-        }
-
-        if (know === 'Unknown') {
-            fill = 'rgba(56, 61, 71, 0.95)';
-            border = 'rgba(102, 115, 128, 0.85)';
-        } else if (know === 'Detected') {
-            fill = 'rgba(64, 82, 122, 0.82)';
-            border = 'rgba(115, 140, 191, 0.9)';
-        }
-
-        // Glow ring
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, radius + 2, 0, Math.PI * 2);
-        ctx.fillStyle = hexAlpha(border, 0.35);
-        ctx.fill();
-
-        // Main circle
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
-        ctx.fillStyle = fill;
-        ctx.fill();
-
-        // Current node: yellow ring
-        if (runMapData.current_node_id && runMapData.current_node_id === node.Id) {
-            ctx.beginPath();
-            ctx.arc(p.x, p.y, radius + 6, 0, Math.PI * 2);
-            ctx.strokeStyle = 'rgba(242, 217, 51, 0.9)';
-            ctx.lineWidth = 2;
-            ctx.stroke();
-        } else if (selectedNodeId === node.Id) {
-            ctx.beginPath();
-            ctx.arc(p.x, p.y, radius + 5, 0, Math.PI * 2);
-            ctx.strokeStyle = 'rgba(255, 255, 255, 0.55)';
-            ctx.lineWidth = 1.5;
-            ctx.stroke();
-        }
-
-        // Icon or fog label
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        if (know === 'Unknown') {
-            ctx.fillStyle = '#ffffff';
-            ctx.font = '14px monospace';
-            ctx.fillText('·', p.x, p.y);
-        } else if (know === 'Detected') {
-            ctx.fillStyle = '#c0c8e0';
-            ctx.font = '9px monospace';
-            const fogLabel = (node.Id.charCodeAt(0) & 1) === 0 ? 'Signal' : 'Echo';
-            ctx.fillText(fogLabel, p.x, p.y);
+        if (know === 'Silhouette') {
+            drawSilhouetteNode(ctx, p, node);
         } else {
-            ctx.fillStyle = '#ffffff';
-            ctx.font = `${radius * 0.85}px sans-serif`;
-            ctx.fillText(RUN_TYPE_ICONS[node.type] || '?', p.x, p.y);
-        }
-
-        // Label below node
-        if (know === 'Identified' && node.Title) {
-            const label = node.Title.length > 16 ? node.Title.substring(0, 14) + '..' : node.Title;
-            ctx.fillStyle = node.state === 'Reachable' ? '#e0e2f0' : 'rgba(224, 226, 240, 0.5)';
-            ctx.font = '10px sans-serif';
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'top';
-            ctx.fillText(label, p.x, p.y + radius + 4);
+            drawInfoNode(ctx, p, node, know === 'Scanned');
         }
     });
+}
+
+function drawSilhouetteNode(ctx, p, node) {
+    const radius = 14;
+
+    // Outer faint fill to keep it visible but unobtrusive.
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(26, 30, 44, 0.85)';
+    ctx.fill();
+
+    // Border-only ring.
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(107, 120, 140, 0.85)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Selection / current overlays.
+    if (runMapData.current_node_id === node.Id) {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, radius + 6, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(242, 217, 51, 0.9)';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+    } else if (selectedNodeId === node.Id) {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, radius + 5, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.55)';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+    }
+
+    ctx.fillStyle = 'rgba(204, 214, 230, 0.85)';
+    ctx.font = '14px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('·', p.x, p.y);
+}
+
+function drawInfoNode(ctx, p, node, scanned) {
+    const typeColor = RUN_TYPE_FILL[node.type] || '#606880';
+    let fill = typeColor;
+    let border = RUN_STATE_BORDER[node.state] || '#808090';
+    let radius = 18;
+
+    switch (node.state) {
+        case 'Completed':
+            fill = hexAlpha(typeColor, 0.55);
+            border = '#2ee65a';
+            break;
+        case 'Failed':
+            fill = 'rgba(232, 48, 48, 0.45)';
+            border = '#e83030';
+            break;
+        case 'Reachable':
+            border = '#00d4e8';
+            radius = 20;
+            break;
+        case 'Locked':
+            border = '#e89020';
+            fill = hexAlpha(typeColor, 0.5);
+            break;
+        case 'Visible':
+            border = '#606880';
+            fill = hexAlpha(typeColor, 0.42);
+            break;
+    }
+
+    // Glow ring
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, radius + 2, 0, Math.PI * 2);
+    ctx.fillStyle = hexAlpha(border, 0.35);
+    ctx.fill();
+
+    // Main circle
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+    ctx.fillStyle = fill;
+    ctx.fill();
+
+    if (scanned) {
+        // White accent ring for permanent scan marker.
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, radius + 1.5, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+    }
+
+    // Current / selection rings.
+    if (runMapData.current_node_id === node.Id) {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, radius + 6, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(242, 217, 51, 0.9)';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+    } else if (selectedNodeId === node.Id) {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, radius + 5, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.55)';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+    }
+
+    // Icon center.
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `${radius * 0.85}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(RUN_TYPE_ICONS[node.type] || '?', p.x, p.y);
+
+    // Fuel preview below node.
+    const fuel = Number(node.fuel_cost ?? 0);
+    const fuelLabel = fuel <= 0 ? 'F:-' : `F:${fuel}`;
+    ctx.fillStyle = 'rgba(0, 212, 232, 0.85)';
+    ctx.font = '10px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText(fuelLabel, p.x, p.y + radius + 4);
+
+    // Scanned nodes get a secondary title below the fuel line.
+    if (scanned && node.Title) {
+        const label = node.Title.length > 16 ? node.Title.substring(0, 14) + '..' : node.Title;
+        ctx.fillStyle = node.state === 'Reachable' ? '#e0e2f0' : 'rgba(224, 226, 240, 0.65)';
+        ctx.font = '10px sans-serif';
+        ctx.fillText(label, p.x, p.y + radius + 18);
+    }
 }
 
 function onRunMapClick(e) {
@@ -1122,10 +1410,9 @@ function onRunMapClick(e) {
     let closestDist = Infinity;
 
     nodes.forEach(node => {
-        if (node.state === 'Hidden') return;
-        if (node.state !== 'Reachable') return;
         const p = runNodePos(node, ox, oy, mapW, mapH);
         const dist = Math.hypot(cx - p.x, cy - p.y);
+        // Every visible node (also Silhouette) is clickable so it can be scanned.
         if (dist < 30 && dist < closestDist) {
             closest = node;
             closestDist = dist;
@@ -1143,25 +1430,89 @@ function showRunNodeInfo(node) {
     const panel = document.getElementById('node-info-panel');
     panel.classList.remove('hidden');
 
-    const icon = RUN_TYPE_ICONS[node.type] || '?';
-    const title = node.Title || node.Id;
+    const know = node.knowledge || 'Silhouette';
+    const scanned = know === 'Scanned';
+    const sighted = know !== 'Silhouette';
+    const icon = sighted ? (RUN_TYPE_ICONS[node.type] || '?') : '◌';
+    const title = sighted ? (node.Title || node.Id) : 'Unbekannter Knoten';
     document.getElementById('node-info-title').textContent = `${icon} ${title}`;
 
-    const riskStars = '★'.repeat(node.RiskRating || 0) + '☆'.repeat(Math.max(0, 5 - (node.RiskRating || 0)));
-    document.getElementById('node-info-desc').textContent =
-        `Risiko: ${riskStars}`;
-    document.getElementById('node-info-meta').textContent =
-        `Typ: ${node.type} · Tiefe: ${node.Depth ?? '?'}`;
+    const briefingEl = document.getElementById('node-info-briefing');
+    const preview = (node.briefing_preview || '').trim();
+    if (briefingEl) {
+        if (scanned) {
+            briefingEl.textContent = preview || 'Kein Briefingtext für diesen Knoten.';
+            briefingEl.style.display = '';
+        } else {
+            briefingEl.textContent = '';
+            briefingEl.style.display = 'none';
+        }
+    }
+    briefingShownFromRunMapPanel = scanned && preview.length > 0;
 
-    const btn = document.getElementById('node-select-btn');
-    btn.disabled = false;
-    btn.textContent = 'Kurs setzen';
+    const descEl = document.getElementById('node-info-desc');
+    const metaEl = document.getElementById('node-info-meta');
+    if (sighted) {
+        const riskStars = '★'.repeat(node.RiskRating || 0) + '☆'.repeat(Math.max(0, 5 - (node.RiskRating || 0)));
+        descEl.textContent = `Risiko: ${riskStars}`;
+        metaEl.textContent = `Typ: ${node.type} · Tiefe: ${node.Depth ?? '?'}`;
+    } else {
+        descEl.textContent = 'Keine Scandaten verfügbar.';
+        metaEl.textContent = `Tiefe: ${node.Depth ?? '?'} · Scan benötigt`;
+    }
+
+    const fuelEl = document.getElementById('node-info-fuel');
+    if (fuelEl) {
+        if (sighted) {
+            const fuel = Number(node.fuel_cost ?? 0);
+            fuelEl.textContent = fuel > 0
+                ? `Sprungkosten: ${fuel} Treibstoff`
+                : 'Sprungkosten: —';
+            fuelEl.style.display = '';
+        } else {
+            fuelEl.textContent = '';
+            fuelEl.style.display = 'none';
+        }
+    }
+
+    const rewardsEl = document.getElementById('node-info-rewards');
+    if (rewardsEl) {
+        rewardsEl.textContent = '';
+    }
+
+    const selectBtn = document.getElementById('node-select-btn');
+    if (selectBtn) {
+        const reachable = node.state === 'Reachable';
+        selectBtn.disabled = !reachable;
+        selectBtn.textContent = reachable ? 'Kurs setzen' : 'Nicht erreichbar';
+    }
+
+    const scanBtn = document.getElementById('run-node-scan-btn');
+    if (scanBtn) {
+        const scanCost = Number(runMapData.scan_cost ?? 1);
+        const science = Number((runMapData.resources || {}).ScienceData ?? 0);
+        const canScan = !scanned && science >= scanCost;
+        scanBtn.disabled = !canScan;
+        if (scanned) {
+            scanBtn.textContent = 'Bereits gescannt';
+        } else if (science < scanCost) {
+            scanBtn.textContent = `Scan nicht möglich (${scanCost} ScienceData nötig)`;
+        } else {
+            scanBtn.textContent = `Scannen (${scanCost} ScienceData)`;
+        }
+    }
 }
 
 function confirmNodeSelection() {
     if (!selectedNodeId) return;
     client.sendCommand('SelectNode', { node_id: selectedNodeId });
     client.showToast('Kurs gesetzt – Mission wird geladen...', 'info');
+}
+
+function scanSelectedRunNode() {
+    if (!selectedNodeId) return;
+    client.sendCommand('ScanRunNode', { node_id: selectedNodeId });
+    client.showToast('Scan angefordert...', 'info');
 }
 
 function updateFlightModeButtons() {
@@ -1345,38 +1696,178 @@ function updateNavContactPanel() {
 
     document.getElementById('nav-contact-details').innerHTML = rows;
 
-    const targetBtn = document.getElementById('nav-target-btn');
-    targetBtn.disabled = false;
-    targetBtn.textContent = 'Ziel setzen';
+    const hintEl = document.getElementById('nav-contact-tracking-hint');
+    if (hintEl) {
+        const activeHere = targetTracking.mode !== 'None' && targetTracking.contact_id === selectedNavContactId;
+        hintEl.textContent = activeHere
+            ? `Aktiv: ${trackingModeLabel(targetTracking.mode)} · ${Math.round(targetTracking.range)} m`
+            : '';
+    }
 }
 
-function setContactAsTarget() {
+function trackingModeLabel(mode) {
+    switch (mode) {
+        case 'Follow': return 'Folgen';
+        case 'Orbit': return 'Orbit';
+        case 'KeepAtRange': return 'Abstand halten';
+        default: return mode || '—';
+    }
+}
+
+function syncNavTrackingUI() {
+    const rangeInput = document.getElementById('nav-tracking-range');
+    const rangeVal = document.getElementById('nav-tracking-range-value');
+    const cw = document.getElementById('nav-orbit-cw');
+    const mode = targetTracking.mode || 'None';
+    const useRangeFromServer = mode === 'Orbit' || mode === 'KeepAtRange';
+
+    if (rangeInput) {
+        if (useRangeFromServer && !navTrackingRangeDragging) {
+            const r = Math.max(50, Math.min(400, Math.round(targetTracking.range)));
+            rangeInput.value = String(r);
+            if (rangeVal) rangeVal.textContent = String(r);
+        } else if (!useRangeFromServer && !navTrackingRangeDragging) {
+            if (rangeVal) rangeVal.textContent = String(getNavTrackingRangeFromUI());
+        } else if (navTrackingRangeDragging && rangeVal) {
+            rangeVal.textContent = String(getNavTrackingRangeFromUI());
+        }
+    }
+    if (cw) {
+        if (mode === 'Orbit' && !navOrbitCwAdjusting) {
+            cw.checked = targetTracking.orbit_clockwise !== false;
+        }
+    }
+
+    const row = document.getElementById('nav-tracking-status-row');
+    const label = document.getElementById('nav-tracking-flight-label');
+    if (row && label) {
+        if (targetTracking.mode && targetTracking.mode !== 'None') {
+            row.style.display = '';
+            const name = (contacts.find(c => c.Id === targetTracking.contact_id) || {}).DisplayName
+                || targetTracking.contact_id || '—';
+            label.textContent = `${trackingModeLabel(targetTracking.mode)} · ${name}`;
+        } else {
+            row.style.display = 'none';
+        }
+    }
+
+    if (selectedNavContactId) updateNavContactPanel();
+}
+
+function getNavTrackingRangeFromUI() {
+    const el = document.getElementById('nav-tracking-range');
+    if (!el) return targetTracking.range;
+    return Math.max(50, Math.min(400, parseInt(el.value, 10) || 200));
+}
+
+function getNavOrbitClockwiseFromUI() {
+    const el = document.getElementById('nav-orbit-cw');
+    return el ? el.checked : true;
+}
+
+function sendTargetTracking(mode) {
     if (!selectedNavContactId) return;
-    const c = contacts.find(ct => ct.Id === selectedNavContactId);
-    if (!c) return;
-
-    const z = c.PositionZ ?? 500;
-
-    const unreached = waypoints.filter(wp => !wp.IsReached);
-    unreached.forEach(wp => {
-        client.sendCommand('RemoveWaypoint', { waypoint_id: wp.Id });
+    const range = getNavTrackingRangeFromUI();
+    const orbit_clockwise = getNavOrbitClockwiseFromUI();
+    targetTracking = {
+        ...targetTracking,
+        mode,
+        contact_id: selectedNavContactId,
+        range,
+        orbit_clockwise,
+    };
+    client.sendCommand('SetTargetTracking', {
+        mode,
+        contact_id: selectedNavContactId,
+        range,
+        orbit_clockwise,
     });
+    const labels = { Follow: 'Folgen', Orbit: 'Orbit', KeepAtRange: 'Abstand halten' };
+    client.showToast(labels[mode] ? `${labels[mode]} aktiv` : 'Zielverfolgung', 'info');
+}
 
-    setTimeout(() => {
-        client.sendCommand('SetWaypoint', { x: Math.round(c.PositionX), y: Math.round(c.PositionY), z: Math.round(z) });
-        client.showToast(`Kurs auf ${c.DisplayName || c.Id} gesetzt`, 'info');
-    }, 50);
+function setContactApproach() {
+    if (!selectedNavContactId) return;
+    client.sendCommand('SetCourseToContact', { contact_id: selectedNavContactId, mode: 'approach' });
+    client.showToast('Einmal-Anflug gesetzt', 'info');
+}
+
+function setContactFollow() {
+    sendTargetTracking('Follow');
+}
+
+function setContactOrbit() {
+    sendTargetTracking('Orbit');
+}
+
+function setContactKeepRange() {
+    sendTargetTracking('KeepAtRange');
+}
+
+function setContactFlee() {
+    if (!selectedNavContactId) return;
+    client.sendCommand('SetCourseToContact', { contact_id: selectedNavContactId, mode: 'flee' });
+    client.showToast('Fluchtvektor gesetzt', 'info');
+}
+
+function clearTargetTracking() {
+    targetTracking = { ...targetTracking, mode: 'None', contact_id: '' };
+    client.sendCommand('SetTargetTracking', { mode: 'None' });
+    client.showToast('Zielverfolgung beendet', 'info');
+}
+
+function onNavTrackingRangeInput() {
+    const val = getNavTrackingRangeFromUI();
+    const oc = getNavOrbitClockwiseFromUI();
+    targetTracking = { ...targetTracking, range: val, orbit_clockwise: oc };
+    const rangeVal = document.getElementById('nav-tracking-range-value');
+    if (rangeVal) rangeVal.textContent = String(val);
+    if (targetTracking.mode !== 'Orbit' && targetTracking.mode !== 'KeepAtRange') return;
+    if (!targetTracking.contact_id) return;
+    client.sendCommand('SetTargetTracking', {
+        mode: targetTracking.mode,
+        contact_id: targetTracking.contact_id,
+        range: val,
+        orbit_clockwise: oc,
+    });
+}
+
+function onNavOrbitDirChange() {
+    if (targetTracking.mode !== 'Orbit') return;
+    if (!targetTracking.contact_id) return;
+    const range = getNavTrackingRangeFromUI();
+    const orbit_clockwise = getNavOrbitClockwiseFromUI();
+    targetTracking = { ...targetTracking, range, orbit_clockwise };
+    client.sendCommand('SetTargetTracking', {
+        mode: 'Orbit',
+        contact_id: targetTracking.contact_id,
+        range,
+        orbit_clockwise,
+    });
 }
 
 // ── Captain functions (merged) ──
 
-let briefingShown = false;
 let logFilter = 'all';
 let currentLog = [];
 
 client.on('mission_started', (msg) => {
+    if (briefingShownFromRunMapPanel) {
+        briefingShownFromRunMapPanel = false;
+        briefingShown = true;
+        return;
+    }
+    if (msg.briefing) {
+        pendingMissionBriefingText = msg.briefing;
+    }
+    if (isDecisionResolutionOverlayOpen()) {
+        syncDecisionResolutionCta();
+        return;
+    }
     if (!briefingShown && msg.briefing) {
         briefingShown = true;
+        pendingMissionBriefingText = null;
+        client.resetBriefingOverlayChrome();
         const el = document.getElementById('briefing-text');
         if (el) el.textContent = msg.briefing;
         const ov = document.getElementById('briefing-overlay');
@@ -1384,9 +1875,15 @@ client.on('mission_started', (msg) => {
     }
 });
 
+client.on('decision_resolved', (msg) => {
+    if (msg && msg.resolution_style === 'toast') return;
+    syncDecisionResolutionCta();
+});
+
 function dismissBriefing() {
     const el = document.getElementById('briefing-overlay');
     if (el) el.classList.add('hidden');
+    client.resetBriefingOverlayChrome();
 }
 
 let _lastDecisionIds = '';
@@ -1405,9 +1902,11 @@ function renderDecisions(decisions) {
             <div class="decision-desc">${dec.Description}</div>
             <div class="decision-options">
                 ${dec.Options.map(opt => `
-                    <button class="btn btn-primary btn-block" onclick="resolveDecision('${dec.Id}','${opt.Id}')" style="text-align:left;">
+                    <button class="btn btn-primary btn-block" onclick="resolveDecision('${dec.Id}','${opt.Id}')"
+                            style="text-align:left; flex-direction:column; align-items:flex-start;">
                         <strong>${opt.Label}</strong>
-                        <span class="text-dim" style="font-size:11px; margin-left:8px;">${opt.Description}</span>
+                        <span class="text-dim" style="font-size:11px;">${opt.Description}</span>
+                        ${opt.FlavorHint ? `<span class="text-cyan" style="font-size:11px; font-style:italic;">${opt.FlavorHint}</span>` : ''}
                     </button>
                 `).join('')}
             </div>
@@ -1495,12 +1994,6 @@ function updateEngagementButtons(current) {
         if (r === current) { btn.style.borderColor = 'var(--cyan)'; btn.style.background = 'rgba(0, 200, 230, 0.15)'; }
         else { btn.style.borderColor = ''; btn.style.background = ''; }
     });
-}
-
-function setCourseToContact(mode) {
-    if (!selectedNavContactId) return;
-    client.sendCommand('SetCourseToContact', { contact_id: selectedNavContactId, mode });
-    client.showToast(mode === 'flee' ? 'Fluchtvektor gesetzt' : 'Angriffsvektor gesetzt', 'info');
 }
 
 client.connect();

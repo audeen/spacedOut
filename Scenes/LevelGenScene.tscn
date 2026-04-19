@@ -1,19 +1,17 @@
-[gd_scene load_steps=7 format=3]
+[gd_scene load_steps=8 format=3]
 
 [ext_resource type="Script" path="res://Scripts/LevelGen/LevelGenerator.cs" id="1"]
 [ext_resource type="Script" path="res://Scripts/Player/FlyCamera.cs" id="2"]
 [ext_resource type="Script" path="res://Scripts/LevelGen/LevelGenDebugOverlay.cs" id="3"]
-[ext_resource type="Script" path="res://Scripts/MainScreen/SpaceBackground.cs" id="4"]
+[ext_resource type="Script" path="res://Scripts/Sky/SpaceSkyController.cs" id="4"]
+[ext_resource type="Shader" path="res://Assets/shaders/sky/space_sky.gdshader" id="5"]
 
-[sub_resource type="ProceduralSkyMaterial" id="sky_mat"]
-sky_top_color = Color(0.008, 0.008, 0.035, 1)
-sky_horizon_color = Color(0.015, 0.025, 0.06, 1)
-ground_bottom_color = Color(0.008, 0.008, 0.025, 1)
-ground_horizon_color = Color(0.015, 0.025, 0.06, 1)
-sky_energy_multiplier = 0.08
+[sub_resource type="ShaderMaterial" id="sky_mat"]
+shader = ExtResource("5")
 
 [sub_resource type="Sky" id="sky_main"]
 sky_material = SubResource("sky_mat")
+radiance_size = 1
 
 [sub_resource type="Environment" id="env_main"]
 background_mode = 2
@@ -41,6 +39,7 @@ script = ExtResource("4")
 
 [node name="FlyCamera" type="Camera3D" parent="."]
 fov = 75.0
+far = 20000.0
 script = ExtResource("2")
 
 [node name="GeneratedLevel" type="Node3D" parent="."]

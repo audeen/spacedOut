@@ -10,7 +10,7 @@ public static class ContactActionResolver
     {
         var actions = new List<ActionDescriptor>();
 
-        AddScanAction(actions, contact);
+        AddScanAction(actions, contact, state);
         AddReleaseToNavAction(actions, contact);
         AddMarkAction(actions, contact);
         AddDesignateAction(actions, contact);
@@ -20,8 +20,13 @@ public static class ContactActionResolver
         return actions;
     }
 
-    private static void AddScanAction(List<ActionDescriptor> actions, Contact contact)
+    private const string ScanProbeOrSensorTooltip =
+        "Schattenkontakt (Snapshot): nur scannbar während aktiver Sonde oder in Sensorreichweite.";
+
+    private static void AddScanAction(List<ActionDescriptor> actions, Contact contact, GameState state)
     {
+        bool canScan = ContactScanRules.CanScanContact(contact, state);
+
         if (contact.ScanProgress >= 100)
         {
             actions.Add(new ActionDescriptor
@@ -56,6 +61,8 @@ public static class ContactActionResolver
                 Command = "ScanContact",
                 Label = "Scannen",
                 Style = "primary",
+                Disabled = !canScan,
+                Tooltip = canScan ? "" : ScanProbeOrSensorTooltip,
                 Group = "scan",
             });
         }
@@ -120,6 +127,7 @@ public static class ContactActionResolver
     private static void AddDesignateAction(List<ActionDescriptor> actions, Contact contact)
     {
         if (contact.Discovery != DiscoveryState.Scanned) return;
+        if (contact.Type != ContactType.Hostile) return;
 
         if (contact.IsDesignated)
         {
@@ -149,6 +157,7 @@ public static class ContactActionResolver
     private static void AddWeaknessAction(List<ActionDescriptor> actions, Contact contact)
     {
         if (contact.Discovery != DiscoveryState.Scanned) return;
+        if (contact.Type != ContactType.Hostile) return;
 
         if (contact.HasWeakness)
         {
@@ -191,6 +200,10 @@ public static class ContactActionResolver
         }
     }
 
+    private const string DeepScanTooltip =
+        "Nur in ausreichender Nähe zum Ziel möglich (innerhalb der Tiefenscan-Reichweite). "
+        + "Zu großer Abstand bricht den Vorgang ab — näher anfliegen.";
+
     private static void AddPoiAnalyzeAction(List<ActionDescriptor> actions, Contact contact)
     {
         bool isPoi = contact.Discovery == DiscoveryState.Scanned
@@ -205,7 +218,8 @@ public static class ContactActionResolver
                 {
                     Id = "poi_analyze",
                     Command = "AnalyzePoi",
-                    Label = $"POI-Analyse... {contact.PoiProgress:0}%",
+                    Label = $"Tiefenscan... {contact.PoiProgress:0}%",
+                    Tooltip = DeepScanTooltip,
                     Style = "primary",
                     Disabled = true,
                     Progress = contact.PoiProgress,
@@ -218,7 +232,8 @@ public static class ContactActionResolver
                 {
                     Id = "poi_analyze",
                     Command = "AnalyzePoi",
-                    Label = "POI analysieren",
+                    Label = "Tiefenscan",
+                    Tooltip = DeepScanTooltip,
                     Style = "primary",
                     Group = "poi",
                 });

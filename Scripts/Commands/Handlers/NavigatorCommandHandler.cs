@@ -28,6 +28,8 @@ public class NavigatorCommandHandler
 
     private bool HandleSetWaypoint(JsonElement data)
     {
+        _ctx.State.Navigation.TargetTracking.Clear();
+
         float x = data.GetProperty("x").GetSingle();
         float y = data.GetProperty("y").GetSingle();
         float z = data.TryGetProperty("z", out var zVal) ? zVal.GetSingle() : _ctx.State.Ship.PositionZ;

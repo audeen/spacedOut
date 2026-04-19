@@ -1,7 +1,9 @@
 using System;
 using Godot;
 using SpacedOut.Commands;
+using SpacedOut.Fx;
 using SpacedOut.LevelGen;
+using SpacedOut.Meta;
 using SpacedOut.Mission;
 using SpacedOut.Network;
 using SpacedOut.Orchestration;
@@ -29,7 +31,11 @@ public partial class GameManager : Node3D
     private RunOrchestrator _runOrch = null!;
     private MissionOrchestrator _missionOrch = null!;
     private DebugCommandHandler _debugHandler = null!;
+    private MetaProgressService _metaProgress = null!;
     private Sector3DMarkers? _markers;
+    private Node? _shipScaleCompareRoot;
+    private Node3D? _playerShipAnchor;
+    private CombatFxSystem? _combatFx;
 
     private bool _debugMode = true;
     private int _port = 8080;
@@ -40,6 +46,12 @@ public partial class GameManager : Node3D
         GD.Print(GameFeatures.ResourceZonesEnabled
             ? "[Features] Ressourcenzonen: aktiv"
             : "[Features] Ressourcenzonen: deaktiviert (GameFeatures.ResourceZonesEnabled = false)");
+        GD.Print(GameFeatures.SmallAsteroidsEnabled
+            ? "[Features] Kleine Asteroiden/Scatter: aktiv"
+            : "[Features] Kleine Asteroiden/Scatter: deaktiviert (GameFeatures.SmallAsteroidsEnabled = false)");
+        GD.Print(GameFeatures.SkyboxEnabled
+            ? "[Features] Skybox: aktiv"
+            : "[Features] Skybox: deaktiviert (GameFeatures.SkyboxEnabled = false)");
 
         _server = new GameServer();
         AddChild(_server);
@@ -52,10 +64,22 @@ public partial class GameManager : Node3D
 
         _commandProcessor.Initialize(_gameState, _server);
         _missionController.Initialize(_gameState);
+        _commandProcessor.SetMissionController(_missionController);
 
         _broadcast = new BroadcastService(_gameState, _server);
+        _commandProcessor.SetBroadcastService(_broadcast);
         _runOrch = new RunOrchestrator(new RunController(), _gameState, _server, _broadcast);
         _missionOrch = new MissionOrchestrator(_missionController, _gameState, _broadcast);
+        _commandProcessor.SetMissionOrchestrator(_missionOrch);
+
+        _metaProgress = new MetaProgressService();
+        _metaProgress.Load();
+        _runOrch.SetMetaProgress(_metaProgress);
+        _missionOrch.SetMetaProgress(_metaProgress);
+
+        // Director-Wiring: RunOrchestrator instantiates the director on StartRun; bind it to
+        // MissionOrchestrator so event picks and generic spawn profiles route through pacing.
+        _runOrch.SetMissionOrchestrator(_missionOrch);
 
         _server.ClientConnected += OnClientConnected;
         _server.ClientDisconnected += OnClientDisconnected;
@@ -65,19 +89,27 @@ public partial class GameManager : Node3D
         _commandProcessor.StateChanged += () => _broadcast.BroadcastStateUpdates();
         _commandProcessor.NodeSelected += nodeId => _runOrch.SelectRunNode(nodeId, _missionOrch);
         _commandProcessor.RunResolveRequested += (nodeId, res) => _runOrch.ResolveFromNetwork(nodeId, res, _hud);
+        _commandProcessor.ScanRunNodeRequested += nodeId => _runOrch.ScanRunNode(nodeId);
+        _commandProcessor.PreSectorDecisionResolved += (nodeId, eventId, skip) =>
+            _missionOrch.ResolvePreSectorDecision(nodeId, eventId, skip, _runOrch);
         _missionController.PhaseChanged += phase => _broadcast.BroadcastPhaseChanged(phase);
         _missionController.EventTriggered += eventId => _broadcast.BroadcastEvent(eventId);
         _missionController.MissionEnded += OnMissionEnded;
 
         SetupMainScreen();
         SetupLevelGenerator();
+        SetupCombatFx();
 
         _debugHandler = new DebugCommandHandler(
             _gameState, _missionController, _missionOrch, _runOrch,
             ToggleFlyCamera, OnBiomeChanged,
-            () => _broadcast.BroadcastStateUpdates());
+            refreshSkybox: () => _levelGenerator?.RefreshSkybox(),
+            broadcastStateUpdates: () => _broadcast.BroadcastStateUpdates(),
+            toggleShipScaleCompare: ToggleShipScaleCompare,
+            metaProgress: _metaProgress);
 
-        _runOrch.StartRun();
+        _gameState.ShowMainMenu = true;
+        _hud?.ShowMainMenu();
         _server.StartServer(_port);
     }
 
@@ -86,6 +118,7 @@ public partial class GameManager : Node3D
         var hudLayer = GetNode<CanvasLayer>("HUD");
         _hud = hudLayer.GetNode<MainScreen.HudOverlay>("HudOverlay");
         _hud.Initialize(_gameState);
+        _hud.SetMetaProgress(_metaProgress);
         _hud.DebugModeChanged += enabled => _debugMode = enabled;
         _hud.DebugCommand += cmd => _debugHandler.Execute(cmd);
         _hud.RunMapNodeClicked += nodeId => _hud.SetRunMapSelection(nodeId);
@@ -96,6 +129,30 @@ public partial class GameManager : Node3D
                 _runOrch.SelectRunNode(id, _missionOrch);
         };
         _hud.RunResolvePressed += resolution => _runOrch.ResolveFromHud(resolution, _hud);
+        _hud.RunScanPressed += nodeId => _runOrch.ScanRunNode(nodeId);
+        _hud.NewRunRequested += perkId =>
+        {
+            _hud.HideMainMenu();
+            _gameState.ShowProfile = false;
+            string? selected = string.IsNullOrEmpty(perkId) ? null : perkId;
+            _runOrch.StartRun(missionController: _missionController, perkId: selected);
+        };
+        _hud.ReturnToMainMenuRequested += () =>
+        {
+            _gameState.RunOutcome = RunOutcome.Ongoing;
+            _gameState.RunActive = false;
+            _gameState.ShowProfile = false;
+            _hud.ShowMainMenu();
+        };
+        _hud.ProfileRequested += () =>
+        {
+            _gameState.ShowProfile = true;
+        };
+        _hud.ProfileClosed += () =>
+        {
+            _gameState.ShowProfile = false;
+        };
+        _hud.QuitRequested += () => GetTree().Quit();
     }
 
     private void SetupLevelGenerator()
@@ -115,6 +172,21 @@ public partial class GameManager : Node3D
         }
     }
 
+    /// <summary>
+    /// Creates the invisible player-ship anchor node (used as muzzle origin for
+    /// gunner fire and impact target for enemy fire, since no 3D ship node exists)
+    /// plus the <see cref="CombatFxSystem"/> that spawns short-lived projectile/beam FX.
+    /// </summary>
+    private void SetupCombatFx()
+    {
+        _playerShipAnchor = new Node3D { Name = "PlayerShipAnchor" };
+        AddChild(_playerShipAnchor);
+
+        _combatFx = new CombatFxSystem { Name = "CombatFx" };
+        AddChild(_combatFx);
+        _combatFx.Initialize(_gameState, _missionOrch, _playerShipAnchor);
+    }
+
     public override void _Process(double delta)
     {
         float dt = (float)delta;
@@ -126,6 +198,10 @@ public partial class GameManager : Node3D
         _broadcast.Update(dt);
         _runOrch.SyncRunToState();
         _missionOrch.UpdateMarkers();
+
+        if (_playerShipAnchor != null)
+            _playerShipAnchor.GlobalPosition = MapToWorld(
+                _gameState.Ship.PositionX, _gameState.Ship.PositionY, _gameState.Ship.PositionZ);
 
         _hud?.UpdateDisplay(_gameState, _runOrch.Controller);
 
@@ -153,12 +229,10 @@ public partial class GameManager : Node3D
         var pos = MapToWorld(_gameState.Ship.PositionX, _gameState.Ship.PositionY, _gameState.Ship.PositionZ);
         _bridgeCamera.GlobalPosition = pos;
 
-        var unreached = _gameState.Route.Waypoints.FindAll(w => !w.IsReached);
-        if (unreached.Count > 0)
+        if (TryGetBridgeCameraLookTargetWorld(out var lookAtWorld)
+            && pos.DistanceTo(lookAtWorld) > 1f)
         {
-            var wpWorld = MapToWorld(unreached[0].X, unreached[0].Y, unreached[0].Z);
-            if (pos.DistanceTo(wpWorld) > 1f)
-                _bridgeCamera.LookAt(wpWorld, Vector3.Up);
+            _bridgeCamera.LookAt(lookAtWorld, Vector3.Up);
         }
 
         if (_spaceBackground != null)
@@ -173,22 +247,64 @@ public partial class GameManager : Node3D
         float smoothPos = 1f - MathF.Exp(-8f * delta);
         _bridgeCamera.GlobalPosition = _bridgeCamera.GlobalPosition.Lerp(targetPos, smoothPos);
 
-        var unreached = _gameState.Route.Waypoints.FindAll(w => !w.IsReached);
-        if (unreached.Count > 0)
+        if (TryGetBridgeCameraLookTargetWorld(out var lookAtWorld)
+            && _bridgeCamera.GlobalPosition.DistanceTo(lookAtWorld) > 5f)
         {
-            var wpWorld = MapToWorld(unreached[0].X, unreached[0].Y, unreached[0].Z);
-            if (_bridgeCamera.GlobalPosition.DistanceTo(wpWorld) > 5f)
-            {
-                var target = _bridgeCamera.GlobalTransform.LookingAt(wpWorld, Vector3.Up);
-                float smoothRot = 1f - MathF.Exp(-3f * delta);
-                _bridgeCamera.GlobalTransform = _bridgeCamera.GlobalTransform.InterpolateWith(
-                    target, smoothRot);
-            }
+            var target = _bridgeCamera.GlobalTransform.LookingAt(lookAtWorld, Vector3.Up);
+            float smoothRot = 1f - MathF.Exp(-3f * delta);
+            _bridgeCamera.GlobalTransform = _bridgeCamera.GlobalTransform.InterpolateWith(
+                target, smoothRot);
         }
 
         var activeCam = GetViewport().GetCamera3D();
         if (_spaceBackground != null && activeCam != null)
             _spaceBackground.GlobalPosition = activeCam.GlobalPosition;
+    }
+
+    /// <summary>
+    /// Bridge camera look-at target in world space: target tracking, then first
+    /// unreached waypoint; if all waypoints are reached, the last waypoint in the
+    /// route (final destination); otherwise the sector origin (map center) at mission
+    /// start when no route exists yet.
+    /// </summary>
+    private bool TryGetBridgeCameraLookTargetWorld(out Vector3 worldPos)
+    {
+        var ship = _gameState.Ship;
+        var tt = _gameState.Navigation.TargetTracking;
+        var contact = ShipCalculations.FindValidTrackingContact(_gameState, tt);
+        if (tt.Mode != TargetTrackingMode.None && contact != null)
+        {
+            if (ShipCalculations.TryGetTrackingSteerTarget(tt, ship, contact,
+                    out var tx, out var ty, out var tz, out var shouldMove)
+                && shouldMove)
+            {
+                worldPos = MapToWorld(tx, ty, tz);
+                return true;
+            }
+
+            worldPos = MapToWorld(contact.PositionX, contact.PositionY, contact.PositionZ);
+            return true;
+        }
+
+        var unreached = _gameState.Route.Waypoints.FindAll(w => !w.IsReached);
+        if (unreached.Count > 0)
+        {
+            var wp = unreached[0];
+            worldPos = MapToWorld(wp.X, wp.Y, wp.Z);
+            return true;
+        }
+
+        var route = _gameState.Route.Waypoints;
+        if (route.Count > 0)
+        {
+            var last = route[^1];
+            worldPos = MapToWorld(last.X, last.Y, last.Z);
+            return true;
+        }
+
+        // Kein Nav-Ziel: Richtung Sektormitte (Kartenmittelpunkt), u. a. direkt beim Levelstart.
+        worldPos = CoordinateMapper.SectorOriginWorld(_missionOrch.LevelRadius);
+        return true;
     }
 
     #endregion
@@ -244,7 +360,8 @@ public partial class GameManager : Node3D
 
     private void OnCommandReceived(string clientId, string messageJson)
     {
-        _commandProcessor.ProcessCommand(clientId, messageJson);
+        if (!_commandProcessor.ProcessCommand(clientId, messageJson))
+            _broadcast.SendError(clientId, "Befehl konnte nicht ausgeführt werden.");
     }
 
     private void OnMissionEnded(int resultInt)
@@ -288,6 +405,41 @@ public partial class GameManager : Node3D
             SnapBridgeCameraToShip();
         _hud?.UpdateLevelGenInfo(_levelGenerator);
         _hud?.UpdateSector(_missionOrch.CurrentSector);
+    }
+
+    /// <summary>
+    /// Spawns or removes the ship scale comparison scene under the generated level (FlyCam).
+    /// </summary>
+    private void ToggleShipScaleCompare()
+    {
+        if (_levelGenerator == null)
+        {
+            GD.PrintErr("[Debug] Schiff-Vergleich: kein LevelGenerator.");
+            return;
+        }
+
+        var container = _levelGenerator.GetNode<Node3D>("GeneratedLevel");
+        if (_shipScaleCompareRoot != null && GodotObject.IsInstanceValid(_shipScaleCompareRoot))
+        {
+            _shipScaleCompareRoot.QueueFree();
+            _shipScaleCompareRoot = null;
+            GD.Print("[Debug] Schiff-Vergleich ausgeblendet.");
+            return;
+        }
+
+        _shipScaleCompareRoot = null;
+        var scene = GD.Load<PackedScene>("res://Scenes/Debug/ShipScaleCompare.tscn");
+        if (scene == null)
+        {
+            GD.PrintErr("[Debug] Schiff-Vergleich: ShipScaleCompare.tscn nicht gefunden.");
+            return;
+        }
+
+        var root = scene.Instantiate<Node3D>();
+        root.Position = _levelGenerator.SpawnPoint;
+        container.AddChild(root);
+        _shipScaleCompareRoot = root;
+        GD.Print("[Debug] Schiff-Vergleich: NPC-Schiffe + je ein AssetLibrary-Eintrag (Meshes/Platzhalter) am Spawn (FlyCam). Erneut klicken zum Ausblenden.");
     }
 
     #endregion

@@ -93,6 +93,7 @@ public partial class StarMapDisplay : Control
         foreach (var entity in _sector.Entities)
         {
             if (entity.MapPresence != MapPresence.Point) continue;
+            if (entity.IsDestroyed) continue;
             if (entity.Discovery == DiscoveryState.Hidden && !entity.PreRevealed) continue;
 
             var mapPos = CoordinateMapper.WorldToMap3D(entity.WorldPosition, _sector.LevelRadius);

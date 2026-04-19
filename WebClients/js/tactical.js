@@ -9,7 +9,8 @@ let resourceZones = [];
 let selectedContactId = null;
 let tacticalOnMainScreen = false;
 let probeMode = false;
-let _lastActionsJson = '';
+let _lastActionsStructureKey = '';
+let _lastActionsProgressSnapshot = '';
 let _lastActionsContactId = null;
 
 let probes = [];
@@ -24,6 +25,10 @@ client.on('welcome', () => {
 
 let shipPos = { x: 100, y: 100, z: 500 };
 let sensorRange = 500;
+/** Max range if sensors were Operational (no status penalty); for jam annulus vs. sensorRange. */
+let sensorRangeNominal = 500;
+/** GetStatusMultiplier for Sensors (1 = Operational, lower = degraded). */
+let sensorStatusMultRange = 1;
 let canvas, ctx;
 let sweepAngle = 0;
 let animFrame;
@@ -83,7 +88,8 @@ function getMapParams() {
     const centerX = w * 0.5 + panX;
     const centerY = h * 0.5 + panY;
     const maxRadius = Math.min(w, h) * 0.42 * zoom;
-    const scale = maxRadius / sensorRange;
+    const refRange = Math.max(sensorRange, sensorRangeNominal);
+    const scale = maxRadius / refRange;
     return { w, h, centerX, centerY, maxRadius, scale };
 }
 
@@ -96,11 +102,28 @@ function contactDiscovery(c) {
     return 'Hidden';
 }
 
+/** Live probe ring covers this contact (2D, same as server); while true, Probed renders full, not ghost. */
+function contactCoveredByActiveProbe(c) {
+    if (contactDiscovery(c) !== 'Probed') return false;
+    const px = c.PositionX, py = c.PositionY;
+    for (const p of probes) {
+        const dx = px - p.X, dy = py - p.Y;
+        const r = p.RevealRadius ?? 150;
+        if (Math.hypot(dx, dy) <= r) return true;
+    }
+    return false;
+}
+
+function isProbedGhost(c) {
+    return contactDiscovery(c) === 'Probed' && !contactCoveredByActiveProbe(c);
+}
+
 /** Sensor-blips (Detected): inner third by default; RadarShowDetectedInFullRange uses full sensor circle. */
 function isContactVisibleOnRadar(c) {
     const disc = contactDiscovery(c);
     if (disc === 'Hidden') return false;
     if (c.PreRevealed) return true;
+    if (disc === 'Detected' && c.PersistDetectedBeyondSensorRange) return true;
     if (disc !== 'Detected') return true;
     const px = c.PositionX;
     const py = c.PositionY;
@@ -129,7 +152,7 @@ function hitTestContactScreen(clientX, clientY) {
 
     for (const c of contacts) {
         if (!isContactVisibleOnRadar(c)) continue;
-        const isGhost = contactDiscovery(c) === 'Probed';
+        const isGhost = isProbedGhost(c);
         const dx = (isGhost ? c.SnapshotX : c.PositionX) - shipPos.x;
         const dy = (isGhost ? c.SnapshotY : c.PositionY) - shipPos.y;
         const sx = centerX + dx * scale;
@@ -246,9 +269,31 @@ function drawTactical() {
 }
 
 function drawFogOfWar(cx, cy, maxRadius, scale) {
-    const sensorScreenR = sensorRange * scale;
+    const rEff = sensorRange * scale;
+    const rNom = sensorRangeNominal * scale;
+    const jamSeverity = Math.max(0, Math.min(1, 1 - (sensorStatusMultRange ?? 1)));
+
+    // Sensor interference: lost annulus between effective (reliable) and nominal (theoretical max)
+    if (rNom > rEff + 0.5 && jamSeverity > 0.02) {
+        const aFill = 0.06 + jamSeverity * 0.14;
+        ctx.fillStyle = `rgba(220, 75, 35, ${aFill})`;
+        ctx.beginPath();
+        ctx.arc(cx, cy, rNom, 0, Math.PI * 2);
+        ctx.arc(cx, cy, rEff, 0, Math.PI * 2, true);
+        ctx.fill();
+
+        ctx.strokeStyle = `rgba(255, 130, 70, ${0.2 + jamSeverity * 0.25})`;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([5, 5]);
+        ctx.beginPath();
+        ctx.arc(cx, cy, rNom, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+    }
+
+    // Deep fog outside nominal sensor disc
     for (let ring = 0; ring < 15; ring++) {
-        const r = sensorScreenR + ring * 10;
+        const r = rNom + ring * 10;
         if (r > maxRadius + 60) break;
         const alpha = Math.min(ring * 0.04, 0.5);
         ctx.strokeStyle = `rgba(3, 5, 18, ${alpha})`;
@@ -262,7 +307,7 @@ function drawFogOfWar(cx, cy, maxRadius, scale) {
     ctx.lineWidth = 1.5;
     ctx.setLineDash([4, 4]);
     ctx.beginPath();
-    ctx.arc(cx, cy, sensorScreenR, 0, Math.PI * 2);
+    ctx.arc(cx, cy, rEff, 0, Math.PI * 2);
     ctx.stroke();
     ctx.setLineDash([]);
 }
@@ -397,7 +442,7 @@ function drawContacts(cx, cy, scale, zf) {
         if (disc === 'Hidden') return;
         if (!isContactVisibleOnRadar(c)) return;
 
-        const isGhost = disc === 'Probed';
+        const isGhost = isProbedGhost(c);
         const isScanned = disc === 'Scanned';
         const displayX = isGhost ? (c.SnapshotX ?? c.PositionX) : c.PositionX;
         const displayY = isGhost ? (c.SnapshotY ?? c.PositionY) : c.PositionY;
@@ -571,6 +616,7 @@ client.onState((msg) => {
     const d = msg.data;
 
     updatePhaseHeaderFromState(msg);
+    updateEventIndicator(d);
     document.getElementById('timer-display').textContent = formatTime(msg.elapsed_time || 0);
 
     const sensorStatus = d.sensor_status || 'Operational';
@@ -580,7 +626,14 @@ client.onState((msg) => {
     document.getElementById('sensor-energy').textContent = d.sensor_energy ?? 33;
 
     sensorRange = d.sensor_range ?? 500;
+    sensorRangeNominal = d.sensor_range_nominal ?? sensorRange;
+    sensorStatusMultRange = typeof d.sensor_status_mult_range === 'number' ? d.sensor_status_mult_range : 1;
     document.getElementById('sensor-range').textContent = Math.round(sensorRange);
+    const jamLeg = document.getElementById('tactical-jam-legend');
+    if (jamLeg) {
+        const showJam = sensorRangeNominal > sensorRange + 1 && (1 - sensorStatusMultRange) > 0.02;
+        jamLeg.style.display = showJam ? 'inline' : 'none';
+    }
 
     shipPos = { x: d.ship_x ?? 100, y: d.ship_y ?? 100, z: d.ship_z ?? 500 };
     contacts = d.contacts || [];
@@ -601,7 +654,30 @@ client.onState((msg) => {
     renderContacts();
     renderEvents(d.active_events || []);
     updateContactActions();
+
+    updateDockStatusPanel(d);
 });
+
+function updateDockStatusPanel(d) {
+    const panel = document.getElementById('dock-status-panel');
+    const text = document.getElementById('dock-status-text');
+    if (!panel || !text) return;
+
+    const dock = d.dock;
+    if (!dock || dock.Available === false) {
+        panel.style.display = 'none';
+        return;
+    }
+
+    panel.style.display = 'block';
+    if (d.mission_docked) {
+        text.textContent = 'Angedockt: Station — Waffen gesichert.';
+        text.className = 'text-green';
+    } else {
+        text.textContent = 'Station-Dock in Sektor — Kontakt „Andockmast" markiert.';
+        text.className = 'text-cyan';
+    }
+}
 
 function updateProbePanel() {
     const chargesEl = document.getElementById('probe-charges');
@@ -670,7 +746,7 @@ function renderContacts() {
         const isSelected = c.Id === selectedContactId;
         const scanning = c.IsScanning;
         const disc = contactDiscovery(c);
-        const isGhost = disc === 'Probed';
+        const isGhost = isProbedGhost(c);
         const isScanned = disc === 'Scanned';
 
         if (!el) {
@@ -755,11 +831,59 @@ function selectContact(contactId) {
     updateContactActions();
 }
 
+function actionTooltip(action) {
+    return action.Tooltip ?? action.tooltip ?? '';
+}
+
+/** Actions identity without Label/Progress (labels embed live percentages and would force full DOM rebuild every tick). */
+function stableActionsStructureKey(actions) {
+    return JSON.stringify((actions || []).map((a) => ({
+        Id: a.Id,
+        Command: a.Command,
+        Style: a.Style,
+        Disabled: a.Disabled,
+        Active: a.Active,
+        Group: a.Group,
+        Confirm: a.Confirm,
+        Tooltip: actionTooltip(a),
+    })));
+}
+
+function makeActionKey(action) {
+    return `${action.Group || 'default'}::${action.Id || ''}`;
+}
+
+function syncActionButtonProgressFromActions(actions) {
+    const container = document.getElementById('action-buttons-container');
+    if (!container) return;
+    for (const action of actions) {
+        const key = makeActionKey(action);
+        let btn = null;
+        for (const b of container.querySelectorAll('button[data-action-key]')) {
+            if (b.dataset.actionKey === key) {
+                btn = b;
+                break;
+            }
+        }
+        if (!btn) continue;
+        btn.textContent = action.Label;
+        btn.title = actionTooltip(action);
+        btn.disabled = !!action.Disabled;
+        if (action.Progress != null && action.Progress < 100) {
+            btn.style.backgroundImage =
+                `linear-gradient(90deg, rgba(0,200,230,0.15) ${action.Progress}%, transparent ${action.Progress}%)`;
+        } else {
+            btn.style.backgroundImage = '';
+        }
+    }
+}
+
 function updateContactActions() {
     const panel = document.getElementById('contact-actions');
     if (!selectedContactId) {
         panel.style.display = 'none';
-        _lastActionsJson = '';
+        _lastActionsStructureKey = '';
+        _lastActionsProgressSnapshot = '';
         _lastActionsContactId = null;
         return;
     }
@@ -767,7 +891,8 @@ function updateContactActions() {
     const contact = contacts.find(c => c.Id === selectedContactId);
     if (!contact || contactDiscovery(contact) === 'Hidden') {
         panel.style.display = 'none';
-        _lastActionsJson = '';
+        _lastActionsStructureKey = '';
+        _lastActionsProgressSnapshot = '';
         _lastActionsContactId = null;
         return;
     }
@@ -775,7 +900,8 @@ function updateContactActions() {
     const actions = contactActions[selectedContactId];
     if (!actions || actions.length === 0) {
         panel.style.display = 'none';
-        _lastActionsJson = '';
+        _lastActionsStructureKey = '';
+        _lastActionsProgressSnapshot = '';
         _lastActionsContactId = null;
         return;
     }
@@ -785,9 +911,19 @@ function updateContactActions() {
     document.getElementById('selected-contact-name').textContent =
         identityRevealed ? (contact.DisplayName || '???') : 'Unbekannt';
 
-    const fingerprint = JSON.stringify(actions);
-    if (fingerprint === _lastActionsJson && selectedContactId === _lastActionsContactId) return;
-    _lastActionsJson = fingerprint;
+    const structureKey = stableActionsStructureKey(actions);
+    const progressSnap = actions.map((a) => `${a.Id}:${a.Progress ?? ''}:${a.Label}`).join('|');
+
+    if (structureKey === _lastActionsStructureKey && selectedContactId === _lastActionsContactId) {
+        if (progressSnap !== _lastActionsProgressSnapshot) {
+            _lastActionsProgressSnapshot = progressSnap;
+            syncActionButtonProgressFromActions(actions);
+        }
+        return;
+    }
+
+    _lastActionsStructureKey = structureKey;
+    _lastActionsProgressSnapshot = progressSnap;
     _lastActionsContactId = selectedContactId;
 
     const container = document.getElementById('action-buttons-container');
@@ -821,7 +957,10 @@ function buildButtonAction(action) {
         warning: 'btn-warning', success: 'btn-success', default: '',
     };
     btn.className = `btn btn-block ${styleMap[action.Style] || ''}`;
+    btn.dataset.actionKey = makeActionKey(action);
     btn.textContent = action.Label;
+    const tip = actionTooltip(action);
+    if (tip) btn.title = tip;
     btn.disabled = action.Disabled || false;
 
     if (action.Active) {

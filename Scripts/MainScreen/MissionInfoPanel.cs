@@ -4,6 +4,7 @@ using System.Linq;
 using Godot;
 using SpacedOut.Shared;
 using SpacedOut.State;
+using SpacedOut.Tactical;
 using TC = SpacedOut.Shared.ThemeColors;
 using UI = SpacedOut.Shared.UiFactory;
 
@@ -17,6 +18,9 @@ public class MissionInfoPanel
     private VBoxContainer _eventContainer = null!;
     private VBoxContainer _contactsContainer = null!;
     private Label _statusLine = null!;
+    private Label _exitStatusLine = null!;
+    private Label _harvestLine = null!;
+    private Label _dockStatusLine = null!;
     private Label _phaseBannerLabel = null!;
     private Label _missionEndLabel = null!;
 
@@ -101,6 +105,28 @@ public class MissionInfoPanel
         _statusLine.Position = new Vector2(10, 6);
         statusPanel.AddChild(_statusLine);
 
+        // M1b: Exit-Status + Sektor-Ertrag (replaces the earlier procedural-objective panel).
+        var sectorPanel = UI.CreatePanel(TC.PanelBg);
+        sectorPanel.AnchorTop = 1; sectorPanel.AnchorBottom = 1;
+        sectorPanel.Position = new Vector2(20, -155);
+        sectorPanel.Size = new Vector2(500, 100);
+        sectorPanel.Visible = false;
+        sectorPanel.Name = "SectorPanel";
+        _parent.AddChild(sectorPanel);
+
+        _exitStatusLine = UI.CreateLabel("", 14, TC.DimWhite);
+        _exitStatusLine.Position = new Vector2(10, 6);
+        sectorPanel.AddChild(_exitStatusLine);
+
+        _harvestLine = UI.CreateLabel("", 13, TC.Green);
+        _harvestLine.Position = new Vector2(10, 32);
+        sectorPanel.AddChild(_harvestLine);
+
+        _dockStatusLine = UI.CreateLabel("", 13, TC.Cyan);
+        _dockStatusLine.Position = new Vector2(10, 58);
+        _dockStatusLine.Visible = false;
+        sectorPanel.AddChild(_dockStatusLine);
+
         _phaseBannerLabel = UI.CreateLabel("", 40, TC.Cyan);
         _phaseBannerLabel.AnchorLeft = 0.5f; _phaseBannerLabel.AnchorRight = 0.5f;
         _phaseBannerLabel.AnchorTop = 0.4f; _phaseBannerLabel.AnchorBottom = 0.4f;
@@ -136,7 +162,131 @@ public class MissionInfoPanel
         UpdateEvents(state);
         UpdateContacts(state);
         UpdateStatusLine(state);
+        UpdateSectorPanel(state);
         UpdateMissionEnd(state);
+    }
+
+    /// <summary>
+    /// M1b Sektor-Panel: Zeigt Exit-Status (versteckt/aufgedeckt/in Reichweite) und
+    /// den Ertrag aus POI-Rewards relativ zum Mission-Start.
+    /// </summary>
+    private void UpdateSectorPanel(GameState state)
+    {
+        var panel = _parent.GetNode<PanelContainer>("SectorPanel");
+        var m = state.Mission;
+        bool active = state.MissionStarted && m.Phase != MissionPhase.Ended;
+        panel.Visible = active;
+        if (!active) return;
+
+        UpdateExitStatusLine(state);
+        UpdateHarvestLine(state);
+        UpdateDockStatusLine(state);
+    }
+
+    private void UpdateDockStatusLine(GameState state)
+    {
+        var m = state.Mission;
+        if (m.Dock == null)
+        {
+            _dockStatusLine.Visible = false;
+            return;
+        }
+
+        _dockStatusLine.Visible = true;
+        var d = m.Dock;
+        if (m.Docked)
+        {
+            _dockStatusLine.Text =
+                $"Angedockt — Preise: F{d.FuelPrice} · P{d.PartsPrice} · D{d.DataPrice} · Rep 1P={d.HullPerPart}H";
+            _dockStatusLine.AddThemeColorOverride("font_color", TC.Green);
+        }
+        else
+        {
+            float dist = m.DockDistance;
+            int sl = state.Ship.SpeedLevel;
+            string distStr = dist >= 0 ? $"{dist:F0} m" : "—";
+            string hint;
+            if (dist < 0)
+                hint = "Dock in diesem Sektor — Andockmast anfliegen.";
+            else if (dist > 60f)
+                hint = $"Andockmast: {distStr} · Speed {sl} — näher heran (≤60 m) und Speed ≤2.";
+            else if (sl > 2)
+                hint = $"Andockmast: {distStr} · Speed {sl} — zu schnell, Geschwindigkeit auf ≤2 reduzieren.";
+            else
+                hint = $"Andockmast: {distStr} · Speed {sl} — Andocken läuft...";
+            _dockStatusLine.Text = hint;
+            _dockStatusLine.AddThemeColorOverride("font_color", TC.Cyan);
+        }
+    }
+
+    private void UpdateExitStatusLine(GameState state)
+    {
+        var m = state.Mission;
+        var exit = state.Contacts.Find(c => c.Id == "sector_exit");
+
+        if (!m.JumpCoordinatesUnlocked || exit == null)
+        {
+            _exitStatusLine.Text = "Exit: versteckt — Sonden einsetzen, um den Sprungausgang aufzudecken.";
+            _exitStatusLine.AddThemeColorOverride("font_color", TC.DimWhite);
+            return;
+        }
+
+        float dx = exit.PositionX - state.Ship.PositionX;
+        float dy = exit.PositionY - state.Ship.PositionY;
+        float dz = exit.PositionZ - state.Ship.PositionZ;
+        float dist = MathF.Sqrt(dx * dx + dy * dy + dz * dz);
+
+        if (dist < 50f)
+        {
+            _exitStatusLine.Text = "Exit: in Reichweite — Sprung bereit.";
+            _exitStatusLine.AddThemeColorOverride("font_color", TC.Green);
+        }
+        else
+        {
+            _exitStatusLine.Text = $"Exit: aufgedeckt ({dist:F0} m)";
+            _exitStatusLine.AddThemeColorOverride("font_color", TC.Cyan);
+        }
+    }
+
+    private static readonly (string Key, string Label)[] HarvestResourceKeys =
+    {
+        ("SpareParts",  "Parts"),
+        ("ScienceData", "Data"),
+        ("Fuel",        "Fuel"),
+        ("Credits",     "Credits"),
+    };
+
+    private void UpdateHarvestLine(GameState state)
+    {
+        var run = state.ActiveRunState;
+        var snap = state.Mission.MissionStartResourcesSnapshot;
+        if (run == null)
+        {
+            _harvestLine.Text = "";
+            _harvestLine.Visible = false;
+            return;
+        }
+
+        var parts = new List<string>();
+        foreach (var (key, label) in HarvestResourceKeys)
+        {
+            run.Resources.TryGetValue(key, out var now);
+            snap.TryGetValue(key, out var before);
+            int delta = now - before;
+            if (delta > 0) parts.Add($"+{delta} {label}");
+        }
+
+        if (parts.Count == 0)
+        {
+            _harvestLine.Text = "Sektor-Ertrag: —";
+            _harvestLine.AddThemeColorOverride("font_color", TC.DimWhite);
+        }
+        else
+        {
+            _harvestLine.Text = "Sektor-Ertrag: " + string.Join(" · ", parts);
+            _harvestLine.AddThemeColorOverride("font_color", TC.Green);
+        }
+        _harvestLine.Visible = true;
     }
 
     private void ShowPhaseBanner(string text)
@@ -246,7 +396,9 @@ public class MissionInfoPanel
         var textCol = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
         row.AddChild(textCol);
 
-        string name = !string.IsNullOrEmpty(pin.Label) ? pin.Label : contact?.DisplayName ?? pin.EntityId;
+        string name = !string.IsNullOrEmpty(pin.Label)
+            ? pin.Label
+            : (contact != null ? ContactDisplayRules.GetDisplayNameForUi(contact) : pin.EntityId);
         textCol.AddChild(UI.CreateLabel(name, 12, new Color(0.75f, 0.78f, 0.85f, 0.9f)));
         textCol.AddChild(UI.CreateLabel(pin.Detail, 10, new Color(0.5f, 0.5f, 0.55f, 0.7f)));
 
@@ -274,7 +426,7 @@ public class MissionInfoPanel
     private void UpdateEvents(GameState state)
     {
         var panel = _parent.GetNode<PanelContainer>("EventPanel");
-        var active = state.ActiveEvents.FindAll(e => e.IsActive);
+        var active = state.ActiveEvents.FindAll(e => e.IsActive && e.ShowOnMainScreen);
         panel.Visible = active.Count > 0;
 
         foreach (var child in _eventContainer.GetChildren())
@@ -303,7 +455,7 @@ public class MissionInfoPanel
         var panel = _parent.GetNode<PanelContainer>("ContactsPanel");
         var pinnedIds = new HashSet<string>(state.PinnedEntities.Select(p => p.EntityId));
         var visible = state.Contacts.FindAll(c =>
-            c.IsVisibleOnMainScreen && !pinnedIds.Contains(c.Id));
+            c.IsVisibleOnMainScreen && !c.IsDestroyed && !pinnedIds.Contains(c.Id));
         panel.Visible = visible.Count > 0;
 
         foreach (var child in _contactsContainer.GetChildren())
@@ -313,13 +465,22 @@ public class MissionInfoPanel
         {
             var color = ThemeColors.GetContactColor(contact.Type);
             string scanStr = contact.ScanProgress < 100 ? $" [{contact.ScanProgress:F0}%]" : "";
-            var lbl = UI.CreateLabel($"● {contact.DisplayName}{scanStr}", 13, color);
+            var lbl = UI.CreateLabel($"● {ContactDisplayRules.GetDisplayNameForUi(contact)}{scanStr}", 13, color);
             _contactsContainer.AddChild(lbl);
         }
     }
 
     private void UpdateStatusLine(GameState state)
     {
+        if (state.Mission.PreSectorEventActive)
+        {
+            string title = string.IsNullOrEmpty(state.Mission.PendingPreSectorEventTitle)
+                ? "Unbekannt"
+                : state.Mission.PendingPreSectorEventTitle;
+            _statusLine.Text = $"Funkspruch: {title} — Captain muss entscheiden.";
+            _statusLine.AddThemeColorOverride("font_color", TC.Yellow);
+            return;
+        }
         if (!state.MissionStarted && state.RunActive && state.ShowRunMapOnMainScreen)
         {
             _statusLine.Text = "Run-Karte: Knoten wählen, betreten, auflösen · F12 Debug";
@@ -351,7 +512,8 @@ public class MissionInfoPanel
         var scanning = state.Contacts.FirstOrDefault(c => c.IsScanning);
         if (scanning != null)
         {
-            _statusLine.Text = $"Scan: {scanning.DisplayName} ({scanning.ScanProgress:F0}%)";
+            _statusLine.Text =
+                $"Scan: {ContactDisplayRules.GetDisplayNameForUi(scanning)} ({scanning.ScanProgress:F0}%)";
             return;
         }
 

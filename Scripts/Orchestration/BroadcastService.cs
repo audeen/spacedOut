@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Text.Json;
 using SpacedOut.Network;
 using SpacedOut.State;
@@ -16,6 +17,56 @@ public class BroadcastService
     {
         _state = state;
         _server = server;
+        _state.MissionLogEntryAdded += OnMissionLogEntryAdded;
+        _state.PendingDecisionAdded += OnPendingDecisionAdded;
+    }
+
+    private void OnPendingDecisionAdded(MissionDecision decision)
+    {
+        foreach (var kvp in _server.Clients)
+        {
+            var client = kvp.Value;
+            if (!client.IsConnected || client.Role != StationRole.CaptainNav) continue;
+
+            var msg = JsonSerializer.Serialize(new
+            {
+                type = "pending_decision",
+                decision = new
+                {
+                    id = decision.Id,
+                    title = decision.Title,
+                    description = decision.Description,
+                    options = decision.Options.Select(o => new
+                    {
+                        id = o.Id,
+                        label = o.Label,
+                        description = o.Description,
+                        flavor_hint = o.FlavorHint,
+                    }).ToList(),
+                }
+            });
+            _server.SendToClient(kvp.Key, msg);
+        }
+    }
+
+    private void OnMissionLogEntryAdded(MissionLogEntry entry)
+    {
+        foreach (var kvp in _server.Clients)
+        {
+            var client = kvp.Value;
+            if (!client.IsConnected || client.Role == null) continue;
+            if (!MissionLogRouting.IsVisibleToRole(entry.Source, client.Role.Value)) continue;
+
+            var msg = JsonSerializer.Serialize(new
+            {
+                type = "mission_log_line",
+                source = entry.Source,
+                message = entry.Message,
+                timestamp = entry.Timestamp,
+                web_toast = entry.WebToast.ToString(),
+            });
+            _server.SendToClient(kvp.Key, msg);
+        }
     }
 
     public void Update(float delta)
@@ -125,6 +176,33 @@ public class BroadcastService
             description = evt.Description,
         });
         _server.BroadcastToAll(msg);
+    }
+
+    /// <summary>
+    /// Kommandant (CaptainNav): Prosatext + Ergebniszeile nach <c>ResolveDecision</c>.
+    /// </summary>
+    public void SendDecisionResolvedToCaptainNav(
+        string narrative,
+        string effectsLine,
+        string? decisionTitle,
+        string? optionLabel,
+        bool cinematicResolution)
+    {
+        var msg = JsonSerializer.Serialize(new
+        {
+            type = "decision_resolved",
+            narrative,
+            effects_line = effectsLine,
+            decision_title = decisionTitle,
+            option_label = optionLabel,
+            resolution_style = cinematicResolution ? "cinematic" : "toast",
+        });
+        foreach (var kvp in _server.Clients)
+        {
+            var client = kvp.Value;
+            if (!client.IsConnected || client.Role != StationRole.CaptainNav) continue;
+            _server.SendToClient(kvp.Key, msg);
+        }
     }
 
     public void SendWelcome(string clientId)

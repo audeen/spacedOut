@@ -408,6 +408,27 @@ input[type="range"]::-webkit-slider-thumb {
     color: var(--cyan);
 }
 
+/* M4 Hybrid-Event-Indikator für Nicht-Captain-Rollen. */
+.event-indicator {
+    background: rgba(20, 18, 8, 0.85);
+    border-left: 3px solid var(--yellow);
+    color: var(--yellow);
+    padding: 8px 12px;
+    margin-bottom: 10px;
+    font-size: 13px;
+    border-radius: 4px;
+    letter-spacing: 0.02em;
+}
+.event-indicator-presector {
+    border-left-color: var(--yellow);
+    color: var(--yellow);
+}
+.event-indicator-decision {
+    border-left-color: var(--cyan);
+    color: var(--cyan);
+    background: rgba(8, 18, 20, 0.85);
+}
+
 /* Decision cards */
 .decision-card {
     background: rgba(15, 20, 45, 0.8);
@@ -542,6 +563,57 @@ input[type="range"]::-webkit-slider-thumb {
     animation: toastIn 0.3s ease, toastOut 0.3s ease 3s forwards;
     pointer-events: auto;
 }
+
+/* JS-driven top toasts: no CSS fade-out timer; removal is timed in client.js */
+.toast.toast--lane-top {
+    animation: toastIn 0.3s ease;
+}
+.toast.toast--lane-top.toast--type-info {
+    border-color: var(--cyan);
+    color: var(--white);
+}
+.toast.toast--lane-top.toast--type-warning {
+    border-color: var(--yellow);
+    color: #ffe8a0;
+}
+.toast.toast--lane-top.toast--type-danger {
+    border-color: var(--red);
+    color: #ffc8c8;
+}
+
+/* Semantic accents (top lane); danger keeps red border above */
+.toast.toast--lane-top.toast--type-info.toast--cat-comms {
+    border-color: #b565f0;
+    color: #ead0ff;
+}
+.toast.toast--lane-top.toast--type-info.toast--cat-nav {
+    border-color: #38c8ff;
+    color: #d4f4ff;
+}
+.toast.toast--lane-top.toast--type-info.toast--cat-system {
+    border-color: #e8c020;
+    color: #fff6c8;
+}
+.toast.toast--lane-top.toast--type-warning.toast--cat-system {
+    border-color: #f0c830;
+    color: #fff8d0;
+}
+.toast.toast--lane-top.toast--type-info.toast--cat-tactical {
+    border-color: #ff9a3c;
+    color: #ffe8d0;
+}
+.toast.toast--lane-top.toast--type-info.toast--cat-engineer {
+    border-color: #4ae070;
+    color: #d8ffd8;
+}
+.toast.toast--lane-top.toast--text-long {
+    white-space: pre-wrap;
+    max-width: min(92vw, 480px);
+    text-align: left;
+    line-height: 1.45;
+    font-size: 13px;
+    font-weight: 500;
+}
 @keyframes toastIn {
     from { opacity: 0; transform: translateY(-10px); }
     to { opacity: 1; transform: translateY(0); }
@@ -549,6 +621,25 @@ input[type="range"]::-webkit-slider-thumb {
 @keyframes toastOut {
     from { opacity: 1; }
     to { opacity: 0; }
+}
+
+/* Kommandant: Entscheidung aufgelöst (länger sichtbar, kein 3s-Fade) */
+.toast.toast--resolution {
+    max-width: min(92vw, 440px);
+    animation: toastIn 0.3s ease;
+    font-size: 14px;
+    line-height: 1.45;
+    text-align: left;
+}
+.toast-resolution__narrative {
+    margin-bottom: 6px;
+}
+.toast-resolution__effects {
+    font-size: 12px;
+    letter-spacing: 0.02em;
+    border-top: 1px solid rgba(0, 200, 255, 0.2);
+    padding-top: 8px;
+    margin-top: 4px;
 }
 
 /* Gunner: shot feedback from bottom (snackbar) */
@@ -566,6 +657,30 @@ input[type="range"]::-webkit-slider-thumb {
     font-weight: 600;
     letter-spacing: 0.02em;
     box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.45);
+}
+
+/* Mission log combat feed (non-shot), bottom lane */
+.toast.toast--from-bottom.toast--mission-feed {
+    font-weight: 600;
+    font-size: 12px;
+}
+.toast.toast--from-bottom.toast--mission-feed.toast--type-info.toast--cat-combat {
+    border-color: var(--cyan);
+    color: #b8f0ff;
+}
+.toast.toast--from-bottom.toast--mission-feed.toast--type-warning {
+    border-color: var(--yellow);
+    color: #ffe8a0;
+}
+.toast.toast--from-bottom.toast--mission-feed.toast--type-danger {
+    border-color: var(--red) !important;
+    color: #ffc8c8;
+}
+.toast.toast--from-bottom.toast--mission-feed.toast--text-long {
+    white-space: pre-wrap;
+    text-align: left;
+    font-weight: 500;
+    max-width: min(92vw, 420px);
 }
 /* Override default .toast timed fade so exit is controlled in JS */
 .toast.toast--from-bottom.toast--fade-out {
@@ -592,6 +707,107 @@ input[type="range"]::-webkit-slider-thumb {
     color: var(--green);
 }
 
+/* Kommandant: pending decision toast (interactive, matches decisions-panel look) */
+.toast-container.toast-container--decision {
+    top: 72px;
+    right: max(12px, env(safe-area-inset-right, 0px));
+    left: auto;
+    transform: none;
+    max-width: min(440px, calc(100vw - 24px));
+    z-index: 110;
+    align-items: stretch;
+    pointer-events: none;
+}
+.toast-decision {
+    pointer-events: auto;
+    animation: toastIn 0.28s ease;
+}
+.toast-decision__outer {
+    border: 1px solid var(--red);
+    border-radius: 4px;
+    padding: 8px 10px 10px;
+    background: rgba(6, 10, 22, 0.97);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.55);
+}
+.toast-decision__header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+    padding-right: 4px;
+}
+.toast-decision__warn-icon {
+    color: var(--red);
+    font-size: 14px;
+    line-height: 1;
+}
+.toast-decision__header-title {
+    flex: 1;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: var(--red);
+    text-transform: uppercase;
+}
+.toast-decision__close {
+    margin-left: auto;
+    border: none;
+    background: transparent;
+    color: var(--dim);
+    font-size: 22px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 4px;
+    border-radius: 4px;
+}
+.toast-decision__close:hover {
+    color: var(--white);
+    background: rgba(255, 255, 255, 0.06);
+}
+.toast-decision__inner {
+    border: 1px solid var(--yellow);
+    border-radius: 4px;
+    padding: 12px 12px 10px;
+    background: rgba(8, 12, 26, 0.98);
+}
+.toast-decision__title {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--white);
+    margin-bottom: 8px;
+    line-height: 1.25;
+}
+.toast-decision__desc {
+    font-size: 12px;
+    color: var(--dim);
+    line-height: 1.4;
+    margin-bottom: 12px;
+}
+.toast-decision__option {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    text-align: left;
+    width: 100%;
+    margin-bottom: 8px;
+    padding: 10px 12px;
+    border: 1px solid rgba(0, 180, 220, 0.55);
+    background: rgba(0, 30, 45, 0.45);
+    gap: 4px;
+}
+.toast-decision__option:last-child {
+    margin-bottom: 0;
+}
+.toast-decision__option:hover {
+    border-color: var(--cyan);
+    background: rgba(0, 60, 80, 0.4);
+}
+.toast-decision__option-sub {
+    font-size: 11px;
+    line-height: 1.3;
+    font-weight: 400;
+}
+
 /* Briefing overlay */
 .briefing-overlay {
     position: fixed;
@@ -600,7 +816,8 @@ input[type="range"]::-webkit-slider-thumb {
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 50;
+    /* Über Toast-/Decision-Containern, damit Briefing & Entscheidungs-Auflösung lesbar bleiben */
+    z-index: 120;
     padding: 20px;
 }
 .briefing-card {
@@ -619,6 +836,21 @@ input[type="range"]::-webkit-slider-thumb {
     font-size: 14px;
     line-height: 1.6;
     margin-bottom: 24px;
+}
+
+/* Auflösung einer Entscheidung (Kommandant/Kapitän): Ergebniszeile unter dem Prosatext */
+.briefing-effects {
+    color: var(--cyan);
+    font-size: 13px;
+    line-height: 1.5;
+    letter-spacing: 0.02em;
+    padding-top: 12px;
+    border-top: 1px solid rgba(0, 200, 255, 0.25);
+    margin-top: 8px;
+    margin-bottom: 0 !important;
+}
+.briefing-effects.hidden {
+    display: none !important;
 }
 
 /* Mission end overlay */
@@ -981,6 +1213,15 @@ input[type="range"]::-webkit-slider-thumb {
     color: var(--cyan);
     margin-bottom: 4px;
 }
+.node-info-briefing {
+    font-size: 13px;
+    color: var(--text);
+    line-height: 1.55;
+    margin-bottom: 8px;
+    max-height: min(38vh, 280px);
+    overflow-y: auto;
+    white-space: pre-wrap;
+}
 .node-info-desc {
     font-size: 13px;
     color: var(--dim);
@@ -992,6 +1233,104 @@ input[type="range"]::-webkit-slider-thumb {
     font-family: var(--font-mono);
     color: var(--dim);
     margin-bottom: 4px;
+}
+
+/* Station dock trading */
+.dock-panel-wrap .panel-title {
+    margin-bottom: 6px;
+}
+.dock-stock {
+    margin-bottom: 12px;
+    padding: 10px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+.dock-stock-title {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    color: var(--dim);
+    margin-bottom: 8px;
+}
+.dock-stock-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px 12px;
+}
+.dock-stock-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+.dock-stock-label {
+    font-size: 11px;
+    color: var(--dim);
+}
+.dock-stock-value {
+    font-family: var(--font-mono);
+    font-size: 15px;
+    font-weight: 600;
+}
+.dock-commodity {
+    margin-bottom: 10px;
+    padding: 10px;
+    background: rgba(15, 18, 32, 0.85);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+.dock-commodity:last-child {
+    margin-bottom: 0;
+}
+.dock-commodity-name {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--white);
+    letter-spacing: 0.5px;
+    margin-bottom: 8px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid rgba(40, 60, 120, 0.35);
+}
+.dock-trade-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+}
+.dock-trade-row:last-child {
+    margin-bottom: 0;
+}
+.dock-trade-action {
+    flex: 0 0 4.5rem;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--dim);
+}
+.dock-trade-buttons {
+    display: flex;
+    gap: 4px;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+.dock-trade-buttons .btn {
+    min-width: 2.25rem;
+    justify-content: center;
+}
+.dock-price-buy,
+.dock-price-sell {
+    flex: 0 0 auto;
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    text-align: right;
+    max-width: 11rem;
+    line-height: 1.25;
+}
+.dock-price-sell {
+    color: var(--cyan-dim);
 }
 
 /* Responsive */

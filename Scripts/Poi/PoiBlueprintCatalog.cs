@@ -11,6 +11,34 @@ public static class PoiBlueprintCatalog
     {
         // ── Asteroid-field specific ─────────────────────────────────
 
+        ["navigation_relay"] = new PoiBlueprint
+        {
+            Id = "navigation_relay",
+            DisplayName = "Relais-Signatur",
+            AnalyzedName = "Navigationsrelais",
+            AnalysisDescription =
+                "Datenbus und Peilfunktion zugänglich. Vollständige Sprungkoordinaten liegen im verschlüsselten Kern — "
+                + "Extraktion durch den Maschinenraum nötig.",
+
+            RequiresDrill = false,
+            RequiresExtraction = true,
+            UsesTractorBeam = false,
+
+            AnalyzeRange = 170f,
+            ExtractRange = 60f,
+
+            AnalyzeDuration = 9f,
+            ExtractDuration = 12f,
+
+            ExtractHeatTarget = SystemId.Drive,
+            ExtractHeatRate = 1.1f,
+
+            Rewards = new[]
+            {
+                new PoiRewardEntry { ResourceId = RunResourceIds.ScienceData, Min = 1, Max = 2 },
+            },
+        },
+
         ["rich_vein"] = new PoiBlueprint
         {
             Id = "rich_vein",
@@ -103,9 +131,8 @@ public static class PoiBlueprintCatalog
 
             Rewards = new[]
             {
-                new PoiRewardEntry { ResourceId = RunResourceIds.SpareParts, Min = 1, Max = 2 },
+                new PoiRewardEntry { ResourceId = RunResourceIds.SpareParts, Min = 1, Max = 3 },
                 new PoiRewardEntry { ResourceId = RunResourceIds.ScienceData, Min = 0, Max = 1 },
-                new PoiRewardEntry { ResourceId = RunResourceIds.Ammo, Min = 0, Max = 2 },
             },
         },
 
@@ -156,12 +183,12 @@ public static class PoiBlueprintCatalog
                 },
                 new PoiRewardProfile
                 {
-                    ProfileId = "cargo_ammo",
-                    Label = "Frachtcontainer (Munition)",
+                    ProfileId = "cargo_data",
+                    Label = "Frachtcontainer (Forschungsdaten)",
                     Weight = 0.8f,
                     Rewards = new[]
                     {
-                        new PoiRewardEntry { ResourceId = RunResourceIds.Ammo, Min = 1, Max = 2 },
+                        new PoiRewardEntry { ResourceId = RunResourceIds.ScienceData, Min = 1, Max = 2 },
                     },
                 },
                 new PoiRewardProfile
@@ -207,6 +234,53 @@ public static class PoiBlueprintCatalog
             },
         },
 
+        ["argos_blackbox"] = new PoiBlueprint
+        {
+            Id = "argos_blackbox",
+            DisplayName = "Wracksignatur",
+            AnalyzedName = "ARGOS-2 — Frachtkern",
+            AnalysisDescription =
+                "Hülle aufgerissen, keine bergbare Hauptfracht mehr. Datenkern und vereinzelte Module sind noch extrahierbar — Traktor empfohlen.",
+
+            RequiresDrill = false,
+            RequiresExtraction = true,
+            UsesTractorBeam = true,
+
+            AnalyzeRange = 160f,
+            ExtractRange = 55f,
+
+            AnalyzeDuration = 7f,
+            ExtractDuration = 8f,
+
+            ExtractHeatTarget = SystemId.Drive,
+            ExtractHeatRate = 1.2f,
+
+            RewardProfiles =
+            [
+                new PoiRewardProfile
+                {
+                    ProfileId = "flight_data",
+                    Label = "Flugschreiber & Routendaten",
+                    Weight = 1f,
+                    Rewards =
+                    [
+                        new PoiRewardEntry { ResourceId = RunResourceIds.ScienceData, Min = 2, Max = 4 },
+                    ],
+                },
+                new PoiRewardProfile
+                {
+                    ProfileId = "spare_cargo",
+                    Label = "Bergbare Ersatzmodule",
+                    Weight = 1f,
+                    Rewards =
+                    [
+                        new PoiRewardEntry { ResourceId = RunResourceIds.SpareParts, Min = 1, Max = 3 },
+                        new PoiRewardEntry { ResourceId = RunResourceIds.ScienceData, Min = 0, Max = 1 },
+                    ],
+                },
+            ],
+        },
+
         ["wreck_fragment"] = new PoiBlueprint
         {
             Id = "wreck_fragment",
@@ -238,8 +312,7 @@ public static class PoiBlueprintCatalog
             Rewards = new[]
             {
                 new PoiRewardEntry { ResourceId = RunResourceIds.SpareParts, Min = 2, Max = 3 },
-                new PoiRewardEntry { ResourceId = RunResourceIds.Ammo, Min = 0, Max = 1 },
-                new PoiRewardEntry { ResourceId = RunResourceIds.ScienceData, Min = 0, Max = 1 },
+                new PoiRewardEntry { ResourceId = RunResourceIds.ScienceData, Min = 1, Max = 2 },
             },
         },
     };

@@ -7,6 +7,8 @@ public class ActionDescriptor
     public string Id { get; init; } = "";
     public string Command { get; init; } = "";
     public string Label { get; init; } = "";
+    /// <summary>Optional HTML title / native tooltip for web tactical buttons.</summary>
+    public string Tooltip { get; init; } = "";
     public string Style { get; init; } = "primary";
     public string Type { get; init; } = "button";
     public bool Disabled { get; init; }

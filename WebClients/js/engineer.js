@@ -32,6 +32,7 @@ client.onState((msg) => {
     const d = msg.data;
 
     updatePhaseHeaderFromState(msg);
+    updateEventIndicator(d);
     document.getElementById('timer-display').textContent = formatTime(msg.elapsed_time || 0);
 
     const hull = d.hull_integrity ?? 100;
@@ -64,7 +65,55 @@ client.onState((msg) => {
     if (sparesEl) sparesEl.textContent = d.spare_parts ?? 0;
 
     updatePoiExtractPanel(d.poi_contacts || [], d.ship_x ?? 0, d.ship_y ?? 0);
+
+    updateDockRepairPanel(d);
 });
+
+function updateDockRepairPanel(d) {
+    const panel = document.getElementById('dock-repair-panel');
+    const status = document.getElementById('dock-repair-status');
+    const buttons = document.getElementById('dock-repair-buttons');
+    if (!panel || !status || !buttons) return;
+
+    const dock = d.dock;
+    const docked = !!d.mission_docked;
+    if (!dock || dock.Available === false) {
+        panel.style.display = 'none';
+        return;
+    }
+
+    panel.style.display = 'block';
+    if (docked) {
+        status.textContent = `Angedockt — Reparatur bereit (1 Ersatzteil → ${dock.HullPerPart} Hülle)`;
+        status.className = 'text-green';
+        buttons.style.display = 'block';
+        const rateEl = document.getElementById('dock-repair-rate');
+        if (rateEl) rateEl.textContent = `${dock.HullPerPart} Hülle`;
+    } else {
+        const dist = typeof d.dock_distance === 'number' ? d.dock_distance : -1;
+        const range = dock.ProximityRange ?? 60;
+        const maxSpeed = dock.MaxSpeedLevel ?? 2;
+        let hint;
+        if (dist < 0) hint = 'Station-Sektor — Navigation muss Andockmast anfliegen.';
+        else if (dist > range) hint = `Andockmast: ${dist.toFixed(0)} m — Navigation: näher heran (≤${range} m).`;
+        else hint = `Andockmast: ${dist.toFixed(0)} m — Speed muss ≤${maxSpeed} sein.`;
+        status.textContent = hint;
+        status.className = 'text-cyan';
+        buttons.style.display = 'none';
+    }
+}
+
+let _dockRepairLastKey = '';
+let _dockRepairLastAt = 0;
+
+function dockRepair(parts) {
+    const key = `repair:${parts}`;
+    const t = Date.now();
+    if (key === _dockRepairLastKey && t - _dockRepairLastAt < 450) return;
+    _dockRepairLastKey = key;
+    _dockRepairLastAt = t;
+    client.sendCommand('DockRepairHull', { parts });
+}
 
 client.on('paused', () => document.getElementById('paused-overlay').classList.remove('hidden'));
 client.on('resumed', () => document.getElementById('paused-overlay').classList.add('hidden'));
@@ -375,11 +424,6 @@ function overchargeSystem(system) {
     client.showToast(`Overcharge: ${system}`, 'warning');
 }
 
-function convertSparesToAmmo() {
-    client.sendCommand('ConvertSparesToAmmo', {});
-    client.showToast('Ersatzteile zu Munition konvertiert', 'info');
-}
-
 function updatePoiExtractPanel(poiContacts, shipX, shipY) {
     const panel = document.getElementById('poi-extract-panel');
     const info = document.getElementById('poi-extract-info');
@@ -392,6 +436,9 @@ function updatePoiExtractPanel(poiContacts, shipX, shipY) {
     }
 
     panel.style.display = '';
+
+    const ph = document.getElementById('poi-extract-placeholder');
+    if (ph) ph.remove();
 
     const activeIds = new Set(poiContacts.map((c) => c.Id));
     info.querySelectorAll('[data-poi-row]').forEach((el) => {
@@ -407,6 +454,7 @@ function updatePoiExtractPanel(poiContacts, shipX, shipY) {
         const phase = c.PoiPhase || 'None';
         const id = c.Id;
         const escId = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(id) : id.replace(/"/g, '');
+        const requiresDrill = c.RequiresDrill === true;
 
         if (phase === 'Extracting') {
             anyRow = true;
@@ -434,7 +482,69 @@ function updatePoiExtractPanel(poiContacts, shipX, shipY) {
             return;
         }
 
-        if (phase === 'Analyzed' || phase === 'Opened') {
+        if (requiresDrill && phase === 'Analyzed') {
+            anyRow = true;
+            const progress = Math.round(c.PoiProgress || 0);
+            const drilling = progress > 0;
+            const desiredMode = drilling ? 'drilling' : 'need-drill';
+            let row = info.querySelector(`[data-poi-row="${escId}"]`);
+
+            if (!row || row.dataset.poiMode !== desiredMode) {
+                if (row) row.remove();
+                row = document.createElement('div');
+                row.dataset.poiRow = id;
+                row.dataset.poiMode = desiredMode;
+                row.style.marginBottom = '8px';
+
+                const title = document.createElement('div');
+                title.style.fontSize = '13px';
+                title.style.fontWeight = '600';
+                const nameSpan = document.createElement('span');
+                nameSpan.textContent = c.DisplayName || '';
+                const distSpan = document.createElement('span');
+                distSpan.className = 'text-dim poi-extract-dist';
+                distSpan.textContent = ` (Dist: ${dist})`;
+                title.appendChild(nameSpan);
+                title.appendChild(distSpan);
+                row.appendChild(title);
+
+                if (drilling) {
+                    const barWrap = document.createElement('div');
+                    barWrap.className = 'progress-bar progress-green';
+                    barWrap.style.height = '6px';
+                    barWrap.style.marginTop = '4px';
+                    const fill = document.createElement('div');
+                    fill.className = 'progress-fill poi-drill-progress-fill';
+                    fill.style.width = '0%';
+                    barWrap.appendChild(fill);
+                    const pct = document.createElement('div');
+                    pct.className = 'text-dim mt-4 poi-drill-pct';
+                    pct.style.fontSize = '12px';
+                    row.appendChild(barWrap);
+                    row.appendChild(pct);
+                } else {
+                    const hint = document.createElement('div');
+                    hint.className = 'text-dim poi-drill-hint';
+                    hint.style.fontSize = '12px';
+                    hint.style.marginTop = '4px';
+                    hint.textContent = 'Zuerst Bohrung (Gunner, Mining-Modus).';
+                    row.appendChild(hint);
+                }
+                info.appendChild(row);
+            } else {
+                const distSpan = row.querySelector('.poi-extract-dist');
+                if (distSpan) distSpan.textContent = ` (Dist: ${dist})`;
+            }
+            if (drilling) {
+                const fill = row.querySelector('.poi-drill-progress-fill');
+                const pctEl = row.querySelector('.poi-drill-pct');
+                if (fill) fill.style.width = `${progress}%`;
+                if (pctEl) pctEl.textContent = `Bohrung ${progress}% · Dist: ${dist}`;
+            }
+            return;
+        }
+
+        if ((phase === 'Analyzed' && !requiresDrill) || phase === 'Opened') {
             anyRow = true;
             let row = info.querySelector(`[data-poi-row="${escId}"]`);
             const ut = c.UsesTractorBeam;
@@ -515,12 +625,10 @@ function updatePoiExtractPanel(poiContacts, shipX, shipY) {
 
 function activateTractor(contactId) {
     client.sendCommand('ActivateTractor', { contact_id: contactId });
-    client.showToast('Traktorstrahl aktiviert', 'info');
 }
 
 function extractResource(contactId) {
     client.sendCommand('ExtractResource', { contact_id: contactId });
-    client.showToast('Extraktion gestartet', 'info');
 }
 
 client.connect();

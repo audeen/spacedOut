@@ -25,6 +25,7 @@
     </div>
 
     <div class="content">
+        <div id="event-indicator" class="event-indicator" style="display:none;"></div>
         <!-- Hull -->
         <div class="panel">
             <div class="panel-title">Hüllenintegrität</div>
@@ -155,7 +156,7 @@
         <div class="panel" id="poi-extract-panel" style="display:none; border-left: 3px solid var(--green);">
             <div class="panel-title" style="color:var(--green);">POI-Bergung</div>
             <div id="poi-extract-info">
-                <div class="text-dim" style="text-align:center;">Keine POIs bereit zur Bergung</div>
+                <div id="poi-extract-placeholder" class="text-dim" style="text-align:center;">Keine POIs bereit zur Bergung</div>
             </div>
         </div>
 
@@ -165,6 +166,23 @@
             <div class="status-row">
                 <span class="status-label">Ersatzteile</span>
                 <span class="status-value text-cyan" id="spare-parts-display" style="font-size:18px;">0</span>
+            </div>
+        </div>
+
+        <!-- Dock Repair (Station sectors only) -->
+        <div class="panel" id="dock-repair-panel" style="display:none; border-left:3px solid var(--cyan);">
+            <div class="panel-title">Station-Reparatur</div>
+            <div id="dock-repair-status" class="text-dim" style="font-size:12px; margin-bottom:8px;">—</div>
+            <div id="dock-repair-buttons" style="display:none;">
+                <div class="status-row">
+                    <span class="status-label">Hülle / Ersatzteil</span>
+                    <span class="status-value text-cyan" id="dock-repair-rate">10</span>
+                </div>
+                <div style="display:flex; gap:4px; margin-top:8px;">
+                    <button class="btn btn-sm btn-primary" onclick="dockRepair(1)">1 Teil</button>
+                    <button class="btn btn-sm btn-primary" onclick="dockRepair(3)">3 Teile</button>
+                    <button class="btn btn-sm btn-primary" onclick="dockRepair(5)">5 Teile</button>
+                </div>
             </div>
         </div>
 

@@ -48,7 +48,7 @@ public partial class MissionController
         {
             contact.PoiAnalyzing = false;
             contact.PoiProgress = 0;
-            AddLog("Tactical", $"POI-Analyse abgebrochen — außer Reichweite: {contact.DisplayName}");
+            AddLog("Tactical", $"Tiefenscan abgebrochen — außer Reichweite: {contact.DisplayName}");
             return;
         }
 
@@ -71,7 +71,7 @@ public partial class MissionController
                 contact.PoiTrapRevealed = true;
 
             string trapInfo = contact.PoiTrapRevealed ? " ⚠ FALLE ERKANNT!" : "";
-            AddLog("Tactical", $"POI analysiert: {analyzedName} — {bp.AnalysisDescription}{trapInfo}");
+            AddLog("Tactical", $"Tiefenscan abgeschlossen: {analyzedName} — {bp.AnalysisDescription}{trapInfo}");
 
             if (bp.SensorRangePenalty > 0)
             {
@@ -167,6 +167,12 @@ public partial class MissionController
             contact.PoiPhase = PoiPhase.Complete;
             GrantRewards(contact, bp.ReducedRewards, bp);
             AddLog("Engineer", $"Überhitzung! Reduzierter Ertrag: {contact.DisplayName}");
+            if (bp.Id == "navigation_relay")
+            {
+                AddLog("Engineer", "Sprungdatenpaket vom Relais extrahiert (unter erschwerten Bedingungen).");
+                MaybeRevealExitAfterRelayPipeline(contact, bp);
+            }
+
             return;
         }
 
@@ -213,8 +219,12 @@ public partial class MissionController
                     return;
                 }
                 if (profile.HullDelta != 0)
+                {
+                    // M7: respect MaxHullOverride from perks (e.g. perk_armor) as the upper cap.
+                    float cap = _state.ActiveRunState?.MaxHullOverride ?? 100f;
                     _state.Ship.HullIntegrity = Math.Clamp(
-                        _state.Ship.HullIntegrity + profile.HullDelta, 0, 100f);
+                        _state.Ship.HullIntegrity + profile.HullDelta, 0, cap);
+                }
                 GrantRewards(contact, profile.Rewards, bp);
                 contact.PoiPhase = PoiPhase.Complete;
                 string hullNote = profile.HullDelta != 0 ? $" | Hull {profile.HullDelta:+0;-0}" : "";
@@ -244,7 +254,43 @@ public partial class MissionController
 
         GrantRewards(contact, rewards, bp);
         contact.PoiPhase = PoiPhase.Complete;
-        AddLog("System", $"POI abgeschlossen: {contact.DisplayName}");
+        if (bp.Id == "navigation_relay")
+        {
+            AddLog("Engineer", "Sprungdatenpaket vom Relais extrahiert.");
+            MaybeRevealExitAfterRelayPipeline(contact, bp);
+        }
+        else
+            AddLog("System", $"POI abgeschlossen: {contact.DisplayName}");
+    }
+
+    private void MaybeRevealExitAfterRelayPipeline(Contact contact, PoiBlueprint bp)
+    {
+        if (bp.Id != "navigation_relay") return;
+        if (contact.Id != "primary_target") return;
+        if (_script?.PrimaryObjective?.HideExitUntilScanned != true) return;
+        if (contact.PoiPhase != PoiPhase.Complete) return;
+        RevealExitCoordinatesFromRelay();
+    }
+
+    private void RevealExitCoordinatesFromRelay()
+    {
+        if (_state.Mission.JumpCoordinatesUnlocked) return;
+        var exit = _state.Contacts.Find(c => c.Id == "sector_exit");
+        if (exit == null) return;
+
+        _state.Mission.JumpCoordinatesUnlocked = true;
+        exit.PreRevealed = true;
+        exit.Discovery = DiscoveryState.Scanned;
+        exit.ReleasedToNav = true;
+        exit.IsVisibleOnMainScreen = true;
+
+        _state.AddMissionLogEntry(new MissionLogEntry
+        {
+            Timestamp = _state.Mission.ElapsedTime,
+            Source = "Navigation",
+            Message = "Sprungkoordinaten vom Relais eingespielt — Sektorausgang markiert.",
+            WebToast = MissionLogWebToast.ToastProminent,
+        });
     }
 
     private void GrantRewards(Contact contact, PoiRewardEntry[] rewards, PoiBlueprint bp)
@@ -258,18 +304,9 @@ public partial class MissionController
             int amount = rng.Next(entry.Min, entry.Max + 1);
             if (amount <= 0) continue;
 
-            if (entry.ResourceId == RunResourceIds.Hull)
-            {
-                _state.Ship.HullIntegrity = Math.Clamp(
-                    _state.Ship.HullIntegrity + amount, 0, 100f);
-                AddLog("System", $"+{amount} Hüllenintegrität");
-            }
-            else
-            {
-                runState.Resources.TryGetValue(entry.ResourceId, out int current);
-                runState.Resources[entry.ResourceId] = current + amount;
-                AddLog("System", $"+{amount} {entry.ResourceId}");
-            }
+            runState.Resources.TryGetValue(entry.ResourceId, out int current);
+            runState.Resources[entry.ResourceId] = current + amount;
+            AddLog("System", $"+{amount} {entry.ResourceId}", MissionLogWebToast.LogOnly);
         }
     }
 
@@ -292,13 +329,14 @@ public partial class MissionController
         }
     }
 
-    private void AddLog(string source, string message)
+    private void AddLog(string source, string message, MissionLogWebToast webToast = MissionLogWebToast.Unspecified)
     {
-        _state.Mission.Log.Add(new MissionLogEntry
+        _state.AddMissionLogEntry(new MissionLogEntry
         {
             Timestamp = _state.Mission.ElapsedTime,
             Source = source,
             Message = message,
+            WebToast = webToast,
         });
     }
 }

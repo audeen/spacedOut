@@ -88,12 +88,6 @@ public partial class LevelGenDebugOverlay : Control
 
         vbox.AddChild(new HSeparator());
 
-        var replaceBtn = Btn("Assets ersetzen (Test)", 270);
-        replaceBtn.Pressed += OnReplace;
-        vbox.AddChild(replaceBtn);
-
-        vbox.AddChild(new HSeparator());
-
         vbox.AddChild(UI.CreateLabel("STEUERUNG", 14, TC.Cyan));
         vbox.AddChild(UI.CreateLabel(
             "WASD / QE  –  Bewegen\n" +
@@ -152,13 +146,6 @@ public partial class LevelGenDebugOverlay : Control
         if (_gen == null) return;
         if (int.TryParse(_seedInput.Text, out int seed))
             _gen.GenerateLevel(seed, _gen.CurrentBiomeId);
-    }
-
-    private void OnReplace()
-    {
-        var container = _gen?.GetNodeOrNull<Node3D>("GeneratedLevel");
-        if (container != null)
-            AssetReplacer.ReplaceAll(container);
     }
 
     // ── Tiny UI helpers ─────────────────────────────────────────────

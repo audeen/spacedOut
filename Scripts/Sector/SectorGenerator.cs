@@ -23,7 +23,9 @@ public class SectorGenerator
 
     public SectorData Generate(int seed, string biomeId, RunNodeType? nodeType = null,
         float radiusMultiplier = 1f, List<AgentSpawnProfile>? agentOverrides = null,
-        IReadOnlyList<MissionMarkerPlacement>? missionMarkers = null)
+        IReadOnlyList<MissionMarkerPlacement>? missionMarkers = null,
+        PrimaryObjective? primaryObjective = null,
+        bool disableBiomeLandmark = false)
     {
         _rng = new Random(seed);
         _instanceCounter = 0;
@@ -41,15 +43,30 @@ public class SectorGenerator
         };
 
         CalculateLayout(data, biome);
-        PlaceLandmarks(data, biome);
+        if (!disableBiomeLandmark)
+            PlaceLandmarks(data, biome);
+
+        if (primaryObjective != null)
+            PlacePrimaryObjective(data, biome, primaryObjective);
 
         var clusters = GenerateClusterCenters(data, biome, scaleFactor);
         data.ClusterCenters.AddRange(clusters);
 
         PlaceMidScale(data, biome, clusters, scaleFactor);
-        PlaceSmallInClusters(data, biome, clusters, scaleFactor);
-        PlaceScatter(data, biome, scaleFactor);
-        PlaceMarkers(data, biome, scaleFactor, missionMarkers);
+        if (GameFeatures.SmallAsteroidsEnabled)
+        {
+            PlaceSmallInClusters(data, biome, clusters, scaleFactor);
+            PlaceScatter(data, biome, scaleFactor);
+        }
+        // Peaceful/neutral sectors (Start, Side, Station, End, or unspecified) reveal the
+        // exit from the start. Dangerous sectors (Hostile, Anomaly, Story) keep it hidden
+        // until a probe/relay scan uncovers it. Mission scripts can always override this
+        // via PrimaryObjective.HideExitUntilScanned.
+        bool defaultHideExit = nodeType is RunNodeType.Hostile
+            or RunNodeType.Anomaly
+            or RunNodeType.Story;
+        bool hideExit = primaryObjective?.HideExitUntilScanned ?? defaultHideExit;
+        PlaceMarkers(data, biome, scaleFactor, missionMarkers, hideExit);
         if (GameFeatures.ResourceZonesEnabled)
         {
             GenerateResourceZones(data, biome, scaleFactor);
@@ -111,8 +128,49 @@ public class SectorGenerator
             entity.DisplayName = def.DisplayName;
             entity.PreRevealed = true;
             entity.Discovery = DiscoveryState.Scanned;
+
             data.Entities.Add(entity);
         }
+    }
+
+    // ── Primary objective (mission-scoped POI like navigation relay) ─
+
+    private void PlacePrimaryObjective(SectorData data, BiomeDefinition biome, PrimaryObjective objective)
+    {
+        if (string.IsNullOrEmpty(objective.AssetId)) return;
+        var def = AssetLibrary.GetById(objective.AssetId);
+        if (def == null)
+        {
+            GD.PushWarning($"[SectorGen] PrimaryObjective asset '{objective.AssetId}' not found in AssetLibrary");
+            return;
+        }
+
+        Vector3 pos = objective.Placement switch
+        {
+            MarkerPlacementRule.AlongSpawnToLandmark => data.SpawnPoint.Lerp(
+                data.LandmarkPosition, Math.Clamp(objective.TAlongPath, 0f, 1f)),
+            _ => data.LandmarkPosition,
+        };
+
+        var entity = CreateEntity(def, pos, 1f, RandomRotation(), data.BiomeId);
+        entity.MapPresence = MapPresence.Point;
+        entity.IsPrimaryObjective = true;
+        entity.IsMissionRelevant = true;
+        entity.DisplayName = objective.DefaultName;
+        entity.PoiType = objective.PoiBlueprintId;
+        entity.Tags = new[] { "mission", "primary_objective" };
+        if (objective.HiddenUntilDiscovered)
+        {
+            entity.PreRevealed = false;
+            entity.Discovery = DiscoveryState.Hidden;
+        }
+        else
+        {
+            entity.PreRevealed = true;
+            entity.Discovery = DiscoveryState.Scanned;
+        }
+
+        data.Entities.Add(entity);
     }
 
     // ── Cluster centers ─────────────────────────────────────────────
@@ -199,7 +257,9 @@ public class SectorGenerator
     private void PlaceSmallInClusters(SectorData data, BiomeDefinition biome, List<Vector3> clusters,
         float scaleFactor = 1f)
     {
-        float sf = MathF.Sqrt(scaleFactor);
+        // Small/Scatter-Tier skaliert linear mit scaleFactor (Volumen-Proxy), damit
+        // grosse Sektoren (z.B. 5x) nicht leer wirken. Mid/Landmark bleiben bei Sqrt.
+        float sf = scaleFactor;
         int total = _rng.Next((int)(biome.SmallMin * sf), (int)(biome.SmallMax * sf) + 1);
         int inClusters = (int)(total * 0.65f);
         if (clusters.Count == 0) return;
@@ -226,7 +286,8 @@ public class SectorGenerator
 
     private void PlaceScatter(SectorData data, BiomeDefinition biome, float scaleFactor = 1f)
     {
-        float sf = MathF.Sqrt(scaleFactor);
+        // Scatter skaliert linear mit scaleFactor (Volumen-Proxy), analog zu PlaceSmallInClusters.
+        float sf = scaleFactor;
         int count = _rng.Next((int)(biome.ScatterMin * sf), (int)(biome.ScatterMax * sf) + 1);
         for (int i = 0; i < count; i++)
         {
@@ -243,19 +304,58 @@ public class SectorGenerator
     // ── Markers (POI, exit, encounter, etc.) ────────────────────────
 
     private void PlaceMarkers(SectorData data, BiomeDefinition biome, float scaleFactor = 1f,
-        IReadOnlyList<MissionMarkerPlacement>? missionMarkers = null)
+        IReadOnlyList<MissionMarkerPlacement>? missionMarkers = null, bool hideExitUntilRelayScan = false)
     {
-        // Exit marker
+        // Exit marker — stable id so MissionController/Orchestrator can find it for
+        // probe-reveal and proximity-end regardless of hidden/visible state.
         var exitDef = AssetLibrary.GetById("exit_marker");
         if (exitDef != null)
         {
             var entity = CreateEntity(exitDef, data.ExitPoint, 1f, Vector3.Zero, data.BiomeId);
+            entity.Id = "sector_exit";
             entity.MapPresence = MapPresence.Point;
             entity.DisplayName = "Ausgang";
-            entity.PreRevealed = true;
-            entity.Discovery = DiscoveryState.Scanned;
             entity.ContactType = ContactType.Neutral;
+            if (hideExitUntilRelayScan)
+            {
+                entity.PreRevealed = false;
+                entity.Discovery = DiscoveryState.Hidden;
+            }
+            else
+            {
+                entity.PreRevealed = true;
+                entity.Discovery = DiscoveryState.Scanned;
+            }
+
             data.Entities.Add(entity);
+        }
+
+        // M5: Station sectors get a dedicated dock contact the player can park next to
+        // for trade/repair. Placed near the landmark (station core).
+        if (data.NodeType == RunNodeType.Station)
+        {
+            var dockDef = AssetLibrary.GetById("station_dock");
+            if (dockDef != null)
+            {
+                // Offset from the station landmark so it's clearly a dock, not the core itself.
+                float r = data.LevelRadius;
+                float ang = NextFloat() * Mathf.Tau;
+                float off = r * 0.12f;
+                var dockPos = data.LandmarkPosition + new Vector3(
+                    MathF.Cos(ang) * off,
+                    (NextFloat() - 0.5f) * r * 0.04f,
+                    MathF.Sin(ang) * off);
+
+                var dock = CreateEntity(dockDef, dockPos, 1f, Vector3.Zero, data.BiomeId);
+                dock.Id = "station_dock";
+                dock.MapPresence = MapPresence.Point;
+                dock.DisplayName = "Andockmast";
+                dock.ContactType = ContactType.Friendly;
+                dock.PreRevealed = true;
+                dock.Discovery = DiscoveryState.Scanned;
+                dock.Tags = new[] { "marker", "dock", "station" };
+                data.Entities.Add(dock);
+            }
         }
 
         // Encounter hotspot is only data.EncounterPosition (CalculateLayout). Optional encounter_marker
@@ -442,12 +542,22 @@ public class SectorGenerator
             if (template.FillAssets.Length == 0)
                 continue;
 
+            string[] fillPool = template.FillAssets;
+            if (!GameFeatures.SmallAsteroidsEnabled)
+            {
+                fillPool = template.FillAssets
+                    .Where(id => AssetLibrary.GetById(id) is { Category: not AssetCategory.AsteroidSmall })
+                    .ToArray();
+                if (fillPool.Length == 0)
+                    continue;
+            }
+
             int fillCount = (int)(template.BaseFillCount * zone.Density);
             fillCount = Math.Max(fillCount, 3);
 
             for (int i = 0; i < fillCount; i++)
             {
-                string assetId = template.FillAssets[_rng.Next(template.FillAssets.Length)];
+                string assetId = fillPool[_rng.Next(fillPool.Length)];
                 var def = AssetLibrary.GetById(assetId);
                 if (def == null) continue;
 
@@ -726,7 +836,7 @@ public class SectorGenerator
                 => MapPresence.NearfieldOnly,
             AssetCategory.ResourceNode or AssetCategory.PoiMarker or AssetCategory.LootMarker
             or AssetCategory.Beacon or AssetCategory.UtilityNode or AssetCategory.ExitMarker
-            or AssetCategory.EncounterMarker
+            or AssetCategory.EncounterMarker or AssetCategory.MissionStructure
                 => MapPresence.Point,
             _ => MapPresence.None,
         };
@@ -750,6 +860,7 @@ public class SectorGenerator
         AssetCategory.Beacon => SectorEntityType.Beacon,
         AssetCategory.EncounterMarker => SectorEntityType.EncounterMarker,
         AssetCategory.ExitMarker => SectorEntityType.ExitMarker,
+        AssetCategory.MissionStructure => SectorEntityType.MissionStructure,
         _ => SectorEntityType.AsteroidSmall,
     };
 

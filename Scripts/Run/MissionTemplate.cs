@@ -20,4 +20,11 @@ public class MissionTemplate
     public List<string> PossibleFlags { get; set; } = new();
     public List<string> Objectives { get; set; } = new();
     public string Twist { get; set; } = "";
+
+    /// <summary>
+    /// Director hints: free-form labels the <see cref="IRunDirector"/> uses to pick templates by intent
+    /// (e.g. <c>"breather"</c>, <c>"pressure"</c>, <c>"reward"</c>, <c>"safe_haven"</c>).
+    /// Authoring stays free; unknown tags are ignored.
+    /// </summary>
+    public List<string> Tags { get; set; } = new();
 }

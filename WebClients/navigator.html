@@ -18,9 +18,22 @@
     <div class="briefing-overlay hidden" id="briefing-overlay"
         style="position:fixed;inset:0;background:rgba(5,8,18,0.95);z-index:1000;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;">
         <div style="max-width:500px;text-align:center;">
-            <div style="font-size:20px;font-weight:700;color:var(--cyan);margin-bottom:12px;">MISSIONSBRIEFING</div>
-            <div id="briefing-text" style="font-size:15px;line-height:1.6;color:var(--text);margin-bottom:20px;"></div>
-            <button class="btn btn-primary" onclick="dismissBriefing()">Verstanden</button>
+            <div id="briefing-title" data-default-title="MISSIONSBRIEFING"
+                style="font-size:20px;font-weight:700;color:var(--cyan);margin-bottom:12px;">MISSIONSBRIEFING</div>
+            <div id="briefing-text" style="font-size:15px;line-height:1.6;color:var(--text);margin-bottom:12px;"></div>
+            <div id="briefing-effects" class="briefing-effects hidden" style="margin-bottom:20px;" aria-live="polite"></div>
+            <button type="button" class="btn btn-primary" onclick="dismissBriefing()">Verstanden</button>
+        </div>
+    </div>
+
+    <div class="briefing-overlay hidden" id="decision-resolution-overlay"
+        style="position:fixed;inset:0;background:rgba(5,8,18,0.95);z-index:1010;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;">
+        <div style="max-width:500px;text-align:center;">
+            <div id="decision-resolution-title" data-default-title="MISSIONSBRIEFING"
+                style="font-size:20px;font-weight:700;color:var(--cyan);margin-bottom:12px;">MISSIONSBRIEFING</div>
+            <div id="decision-resolution-text" style="font-size:15px;line-height:1.6;color:var(--text);margin-bottom:12px;"></div>
+            <div id="decision-resolution-effects" class="briefing-effects hidden" style="margin-bottom:20px;" aria-live="polite"></div>
+            <button type="button" class="btn btn-primary" id="decision-resolution-cta" onclick="onDecisionResolutionContinue()">Verstanden</button>
         </div>
     </div>
 
@@ -43,10 +56,10 @@
                 <div class="sector-map-subtitle" id="run-map-subtitle">Wähle den nächsten Einsatz</div>
             </div>
             <div class="sector-map-resources">
-                <span class="resource-item" id="resource-hull">Hull: 10</span>
                 <span class="resource-item" id="resource-parts">Ersatzteile: 0</span>
-                <span class="resource-item" id="resource-ammo">Munition: 0</span>
                 <span class="resource-item" id="resource-data">Daten: 0</span>
+                <span class="resource-item" id="resource-fuel">Treibstoff: 0</span>
+                <span class="resource-item" id="resource-credits">Credits: 0</span>
             </div>
         </div>
         <div class="sector-map-canvas-container">
@@ -54,8 +67,14 @@
         </div>
         <div class="sector-map-node-info hidden" id="node-info-panel">
             <div class="node-info-title" id="node-info-title"></div>
+            <div class="node-info-briefing" id="node-info-briefing"></div>
             <div class="node-info-desc" id="node-info-desc"></div>
             <div class="node-info-meta" id="node-info-meta"></div>
+            <div class="node-info-fuel text-cyan" id="node-info-fuel" style="font-size:13px;margin-top:6px;"></div>
+            <div class="node-info-rewards text-dim" id="node-info-rewards" style="font-size:12px;margin-top:4px;"></div>
+            <button class="btn btn-block mt-8" id="run-node-scan-btn" onclick="scanSelectedRunNode()">
+                Scannen
+            </button>
             <button class="btn btn-primary btn-block mt-8" id="node-select-btn" onclick="confirmNodeSelection()">
                 Kurs setzen
             </button>
@@ -97,9 +116,34 @@
                     style="font-size:11px; padding:2px 8px;">✕</button>
             </div>
             <div id="nav-contact-details" style="font-size:13px; line-height:1.6;"></div>
-            <button class="btn btn-primary btn-block mt-8" id="nav-target-btn" onclick="setContactAsTarget()">
-                Ziel setzen
-            </button>
+            <div class="mt-8" style="display:flex;flex-direction:column;gap:8px;">
+                <div class="btn-grid btn-grid-2">
+                    <button type="button" class="btn btn-primary btn-sm"
+                        onclick="setContactApproach()">Einmal-Anflug</button>
+                    <button type="button" class="btn btn-primary btn-sm" onclick="setContactFollow()">Folgen</button>
+                    <button type="button" class="btn btn-primary btn-sm" onclick="setContactOrbit()">Orbit</button>
+                    <button type="button" class="btn btn-primary btn-sm" onclick="setContactKeepRange()">Abstand
+                        halten</button>
+                    <button type="button" class="btn btn-warning btn-sm" onclick="setContactFlee()">Flucht</button>
+                    <button type="button" class="btn btn-sm" onclick="clearTargetTracking()">Tracking stoppen</button>
+                </div>
+                <div id="nav-tracking-range-wrap">
+                    <div class="status-row" style="align-items:center; gap:8px;">
+                        <span class="status-label" style="min-width:100px;">Radius / Abstand</span>
+                        <span class="status-value text-cyan" id="nav-tracking-range-value"
+                            style="min-width:36px;">200</span>
+                        <span class="text-dim" style="font-size:11px;">m</span>
+                    </div>
+                    <input type="range" id="nav-tracking-range" min="50" max="400" step="10" value="200"
+                        style="width:100%;" oninput="onNavTrackingRangeInput()" />
+                </div>
+                <label id="nav-orbit-dir-wrap" class="text-dim"
+                    style="font-size:12px; display:flex; align-items:center; gap:6px;">
+                    <input type="checkbox" id="nav-orbit-cw" checked onchange="onNavOrbitDirChange()" />
+                    Orbit Uhrzeigersinn
+                </label>
+                <div id="nav-contact-tracking-hint" class="text-dim" style="font-size:11px;"></div>
+            </div>
         </div>
 
         <!-- Flight Status -->
@@ -128,6 +172,10 @@
             <div class="status-row">
                 <span class="status-label">Dist. nächster WP</span>
                 <span class="status-value text-cyan" id="next-wp-dist" style="font-size:16px;">---</span>
+            </div>
+            <div class="status-row" id="nav-tracking-status-row" style="display:none;">
+                <span class="status-label">Zielverfolgung</span>
+                <span class="status-value text-cyan" id="nav-tracking-flight-label" style="font-size:13px;">—</span>
             </div>
         </div>
 
@@ -178,6 +226,31 @@
             </div>
         </div>
 
+        <!-- Run Resources (commander-owned, always visible during run) -->
+        <div class="panel" id="run-resources-panel" style="display:none;">
+            <div class="panel-title">Run-Ressourcen</div>
+            <div class="status-row">
+                <span class="status-label">Ersatzteile</span>
+                <span class="status-value text-cyan" id="rr-parts" style="font-size:16px;">0</span>
+            </div>
+            <div class="status-row">
+                <span class="status-label">Forschungsdaten</span>
+                <span class="status-value text-cyan" id="rr-data" style="font-size:16px;">0</span>
+            </div>
+            <div class="status-row">
+                <span class="status-label">Treibstoff</span>
+                <span class="status-value text-cyan" id="rr-fuel" style="font-size:16px;">0</span>
+            </div>
+            <div class="status-row">
+                <span class="status-label">Credits</span>
+                <span class="status-value text-cyan" id="rr-credits" style="font-size:16px;">0</span>
+            </div>
+            <div class="status-row" id="rr-perk-row" style="display:none;">
+                <span class="status-label">Aktiver Perk</span>
+                <span class="status-value text-yellow" id="rr-perk" style="font-size:14px;">—</span>
+            </div>
+        </div>
+
         <!-- Hull & Systems -->
         <div class="panel">
             <div class="panel-title">Schiffsstatus</div>
@@ -220,6 +293,95 @@
         <div class="panel" id="captain-events-panel" style="display:none;">
             <div class="panel-title">Aktive Ereignisse</div>
             <div id="captain-events-container"></div>
+        </div>
+
+        <!-- Dock Trading (Station sectors only) -->
+        <div class="panel dock-panel-wrap" id="dock-panel" style="display:none; border-left:3px solid var(--cyan);">
+            <div class="panel-title">Station-Handel</div>
+            <div id="dock-status-line" class="text-dim" style="font-size:12px; margin-bottom:8px;">—</div>
+            <div id="dock-buy-container" style="display:none;">
+                <div class="dock-stock">
+                    <div class="dock-stock-title">Euer Lager</div>
+                    <div class="dock-stock-grid">
+                        <div class="dock-stock-cell">
+                            <span class="dock-stock-label">Treibstoff</span>
+                            <span class="dock-stock-value text-cyan" id="dock-stock-fuel">—</span>
+                        </div>
+                        <div class="dock-stock-cell">
+                            <span class="dock-stock-label">Ersatzteile</span>
+                            <span class="dock-stock-value text-cyan" id="dock-stock-parts">—</span>
+                        </div>
+                        <div class="dock-stock-cell">
+                            <span class="dock-stock-label">Forschung</span>
+                            <span class="dock-stock-value text-cyan" id="dock-stock-data">—</span>
+                        </div>
+                        <div class="dock-stock-cell">
+                            <span class="dock-stock-label">Credits</span>
+                            <span class="dock-stock-value text-cyan" id="dock-stock-credits">—</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="dock-commodity">
+                    <div class="dock-commodity-name">Treibstoff</div>
+                    <div class="dock-trade-row">
+                        <span class="dock-trade-action">Kaufen</span>
+                        <div class="dock-trade-buttons">
+                            <button type="button" class="btn btn-sm btn-primary" onclick="dockBuy('Fuel', 1)">1</button>
+                            <button type="button" class="btn btn-sm btn-primary" onclick="dockBuy('Fuel', 5)">5</button>
+                        </div>
+                        <span class="dock-price-buy text-cyan" id="dock-fuel-price">—</span>
+                    </div>
+                    <div class="dock-trade-row">
+                        <span class="dock-trade-action">Verkaufen</span>
+                        <div class="dock-trade-buttons">
+                            <button type="button" class="btn btn-sm" onclick="dockSell('Fuel', 1)">1</button>
+                            <button type="button" class="btn btn-sm" onclick="dockSell('Fuel', 5)">5</button>
+                        </div>
+                        <span class="dock-price-sell" id="dock-fuel-sell-price">—</span>
+                    </div>
+                </div>
+
+                <div class="dock-commodity">
+                    <div class="dock-commodity-name">Ersatzteile</div>
+                    <div class="dock-trade-row">
+                        <span class="dock-trade-action">Kaufen</span>
+                        <div class="dock-trade-buttons">
+                            <button type="button" class="btn btn-sm btn-primary" onclick="dockBuy('SpareParts', 1)">1</button>
+                            <button type="button" class="btn btn-sm btn-primary" onclick="dockBuy('SpareParts', 5)">5</button>
+                        </div>
+                        <span class="dock-price-buy text-cyan" id="dock-parts-price">—</span>
+                    </div>
+                    <div class="dock-trade-row">
+                        <span class="dock-trade-action">Verkaufen</span>
+                        <div class="dock-trade-buttons">
+                            <button type="button" class="btn btn-sm" onclick="dockSell('SpareParts', 1)">1</button>
+                            <button type="button" class="btn btn-sm" onclick="dockSell('SpareParts', 5)">5</button>
+                        </div>
+                        <span class="dock-price-sell" id="dock-parts-sell-price">—</span>
+                    </div>
+                </div>
+
+                <div class="dock-commodity">
+                    <div class="dock-commodity-name">Forschungsdaten</div>
+                    <div class="dock-trade-row">
+                        <span class="dock-trade-action">Kaufen</span>
+                        <div class="dock-trade-buttons">
+                            <button type="button" class="btn btn-sm btn-primary" onclick="dockBuy('ScienceData', 1)">1</button>
+                            <button type="button" class="btn btn-sm btn-primary" onclick="dockBuy('ScienceData', 5)">5</button>
+                        </div>
+                        <span class="dock-price-buy text-cyan" id="dock-data-price">—</span>
+                    </div>
+                    <div class="dock-trade-row">
+                        <span class="dock-trade-action">Verkaufen</span>
+                        <div class="dock-trade-buttons">
+                            <button type="button" class="btn btn-sm" onclick="dockSell('ScienceData', 1)">1</button>
+                            <button type="button" class="btn btn-sm" onclick="dockSell('ScienceData', 5)">5</button>
+                        </div>
+                        <span class="dock-price-sell" id="dock-data-sell-price">—</span>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <!-- Actions -->

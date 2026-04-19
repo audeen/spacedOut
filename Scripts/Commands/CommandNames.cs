@@ -15,10 +15,18 @@ public static class CommandNames
     public const string HighlightRoute = "HighlightRoute";
     public const string ToggleStarMapOnMainScreen = "ToggleStarMapOnMainScreen";
     public const string SetCourseToContact = "SetCourseToContact";
+    public const string SetTargetTracking = "SetTargetTracking";
+    public const string LeaveSector = "LeaveSector";
 
     // Run / Map
     public const string SelectNode = "SelectNode";
     public const string ResolveRunNode = "ResolveRunNode";
+    public const string ScanRunNode = "ScanRunNode";
+
+    // Dock (Station sectors, M5)
+    public const string DockRepairHull = "DockRepairHull";
+    public const string DockBuyResource = "DockBuyResource";
+    public const string DockSellResource = "DockSellResource";
 
     // Engineer
     public const string SetEnergyDistribution = "SetEnergyDistribution";
@@ -27,7 +35,6 @@ public static class CommandNames
     public const string RaiseSystemWarning = "RaiseSystemWarning";
     public const string CoolantPulse = "CoolantPulse";
     public const string OverchargeSystem = "OverchargeSystem";
-    public const string ConvertSparesToAmmo = "ConvertSparesToAmmo";
 
     // Tactical
     public const string ScanContact = "ScanContact";

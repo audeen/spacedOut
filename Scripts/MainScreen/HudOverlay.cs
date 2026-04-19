@@ -1,6 +1,7 @@
 using System.Linq;
 using Godot;
 using SpacedOut.LevelGen;
+using SpacedOut.Meta;
 using SpacedOut.Run;
 using SpacedOut.Sector;
 using SpacedOut.State;
@@ -14,6 +15,12 @@ public partial class HudOverlay : Control
     [Signal] public delegate void RunMapNodeClickedEventHandler(string nodeId);
     [Signal] public delegate void RunEnterPressedEventHandler();
     [Signal] public delegate void RunResolvePressedEventHandler(int resolution);
+    [Signal] public delegate void RunScanPressedEventHandler(string nodeId);
+    [Signal] public delegate void NewRunRequestedEventHandler(string perkId);
+    [Signal] public delegate void ReturnToMainMenuRequestedEventHandler();
+    [Signal] public delegate void QuitRequestedEventHandler();
+    [Signal] public delegate void ProfileRequestedEventHandler();
+    [Signal] public delegate void ProfileClosedEventHandler();
 
     private GameState? _state;
     private SectorData? _sector;
@@ -23,6 +30,10 @@ public partial class HudOverlay : Control
     private MissionLogPanel _missionLogPanel = null!;
     private HudDebugPanel _debugPanel = null!;
     private RunPanel _runPanel = null!;
+    private MainMenuOverlay _mainMenu = null!;
+    private RunEndOverlay _runEndOverlay = null!;
+    private ProfilePanel _profilePanel = null!;
+    private MetaProgressService? _metaProgress;
 
     private StarMapDisplay _starMapDisplay = null!;
     private TacticalDisplay _tacticalDisplay = null!;
@@ -58,13 +69,41 @@ public partial class HudOverlay : Control
 
         _runPanel = new RunPanel(this, _runMapDisplay,
             () => EmitSignal(SignalName.RunEnterPressed),
-            res => EmitSignal(SignalName.RunResolvePressed, res));
+            res => EmitSignal(SignalName.RunResolvePressed, res),
+            nodeId => EmitSignal(SignalName.RunScanPressed, nodeId));
         _runPanel.Build();
 
         _debugPanel = new HudDebugPanel(this,
             cmd => EmitSignal(SignalName.DebugCommand, cmd),
             _state!.Debug);
         _debugPanel.Build();
+
+        _runEndOverlay = new RunEndOverlay(this,
+            onNewRun: () => EmitSignal(SignalName.NewRunRequested, ""),
+            onReturnToMenu: () => EmitSignal(SignalName.ReturnToMainMenuRequested));
+        _runEndOverlay.Build();
+
+        _mainMenu = new MainMenuOverlay(this,
+            onNewRun: perkId => EmitSignal(SignalName.NewRunRequested, perkId ?? ""),
+            onQuit: () => EmitSignal(SignalName.QuitRequested),
+            onProfile: () => EmitSignal(SignalName.ProfileRequested),
+            profileGetter: () => _metaProgress?.Profile);
+        _mainMenu.Build();
+
+        _profilePanel = new ProfilePanel(this,
+            serviceGetter: () => _metaProgress,
+            onClose: () => EmitSignal(SignalName.ProfileClosed),
+            onChanged: () => _mainMenu.Refresh());
+        _profilePanel.Build();
+    }
+
+    /// <summary>M7: wires the persistent meta service so the menu/profile UI can read Sternenstaub
+    /// and unlock state. Must be called after <see cref="Initialize"/>.</summary>
+    public void SetMetaProgress(MetaProgressService meta)
+    {
+        _metaProgress = meta;
+        _mainMenu?.Refresh();
+        _profilePanel?.Refresh();
     }
 
     private void BuildStationDisplays()
@@ -125,6 +164,8 @@ public partial class HudOverlay : Control
         _missionLogPanel.Update(state);
         UpdateStationDisplays(state);
         _debugPanel.UpdateGodmodeStatus();
+        _debugPanel.UpdateSkyboxStatus();
+        _debugPanel.UpdateSectorContactsDebugList(state);
 
         if (state.RunActive && run != null)
             UpdateRunUi(run);
@@ -132,19 +173,30 @@ public partial class HudOverlay : Control
 
     private void UpdateStationDisplays(GameState state)
     {
-        bool runMapActive = state.ShowRunMapOnMainScreen && state.RunActive;
+        bool profileActive = state.ShowProfile;
+        bool menuActive = state.ShowMainMenu && !profileActive;
+        bool runEnded = state.RunOutcome != RunOutcome.Ongoing && !profileActive;
+
+        if (profileActive) _profilePanel.Show(); else _profilePanel.Hide();
+        if (menuActive) _mainMenu.Show(); else _mainMenu.Hide();
+        if (profileActive) _runEndOverlay.Hide(); else _runEndOverlay.UpdateOutcome(state);
+
+        // Whenever any full-screen overlay is up, suppress all other panels/maps.
+        bool suppressAll = profileActive || menuActive || runEnded;
+
+        bool runMapActive = !suppressAll && state.ShowRunMapOnMainScreen && state.RunActive;
 
         var pinnedIds = new System.Collections.Generic.HashSet<string>(
             state.PinnedEntities.Select(p => p.EntityId));
 
-        _starMapDisplay.Visible = state.ShowStarMapOnMainScreen && !runMapActive;
+        _starMapDisplay.Visible = !suppressAll && state.ShowStarMapOnMainScreen && !runMapActive;
         if (_starMapDisplay.Visible)
         {
             _starMapDisplay.UpdateState(state);
             _starMapDisplay.UpdatePinnedIds(pinnedIds);
         }
 
-        _tacticalDisplay.Visible = state.ShowTacticalOnMainScreen && !runMapActive;
+        _tacticalDisplay.Visible = !suppressAll && state.ShowTacticalOnMainScreen && !runMapActive;
         if (_tacticalDisplay.Visible)
         {
             _tacticalDisplay.UpdateState(state);
@@ -153,6 +205,20 @@ public partial class HudOverlay : Control
 
         _runMapDisplay.Visible = runMapActive;
         _runPanel.UpdateVisibility(runMapActive);
+    }
+
+    public void ShowMainMenu()
+    {
+        if (_state != null)
+            _state.ShowMainMenu = true;
+        _mainMenu?.Show();
+    }
+
+    public void HideMainMenu()
+    {
+        if (_state != null)
+            _state.ShowMainMenu = false;
+        _mainMenu?.Hide();
     }
 
     public static string TranslatePhase(MissionPhase phase) => phase switch
@@ -173,8 +239,11 @@ public partial class HudOverlay : Control
     public string? GetRunMapSelection() =>
         _runPanel.SelectedNodeId;
 
-    public void UpdateRunUi(RunController run) =>
+    public void UpdateRunUi(RunController run)
+    {
         _runPanel.UpdateRun(run);
+        _debugPanel.UpdateDirectorInfo(run);
+    }
 
     public void UpdateLevelGenInfo(LevelGenerator? gen) =>
         _debugPanel.UpdateLevelGenInfo(gen);

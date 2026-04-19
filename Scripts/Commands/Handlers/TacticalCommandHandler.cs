@@ -6,6 +6,7 @@ using SpacedOut.Poi;
 using SpacedOut.Sector;
 using SpacedOut.Shared;
 using SpacedOut.State;
+using SpacedOut.Tactical;
 
 namespace SpacedOut.Commands.Handlers;
 
@@ -45,11 +46,14 @@ public class TacticalCommandHandler
         if (contact == null) return false;
         if (contact.ScanProgress >= 100) return false;
         if (contact.Discovery == DiscoveryState.Hidden) return false;
+        if (!ContactScanRules.CanScanContact(contact, _ctx.State)) return false;
 
         foreach (var c in _ctx.State.Contacts) c.IsScanning = false;
 
         contact.IsScanning = true;
-        _ctx.AddLog("Tactical", $"Scan gestartet: {contact.DisplayName}");
+        _ctx.AddLog("Tactical", ContactDisplayRules.IsIdentityRevealedForPlayer(contact)
+            ? $"Scan gestartet: {ContactDisplayRules.GetDisplayNameForUi(contact)}"
+            : "Scan gestartet (Ziel noch nicht identifiziert)");
         _ctx.EmitStateChanged();
         return true;
     }
@@ -135,11 +139,19 @@ public class TacticalCommandHandler
             float dist = MathF.Sqrt(dx * dx + dy * dy);
             if (dist > probe.RevealRadius) continue;
 
+            // M1b: probe hit on the sector exit reveals it (flips JumpCoordinatesUnlocked).
+            // Scripted missions with ScriptLocksExitUntilScan (tutorial) keep the hard lock —
+            // their exit is only revealed by script-driven events (e.g. relay extraction).
+            if (contact.Id == "sector_exit" && !_ctx.State.Mission.JumpCoordinatesUnlocked)
+            {
+                if (SectorExitCoordinateUnlock.TryApplyIfEligible(_ctx.State.Mission, contact))
+                    _ctx.AddLog("Tactical", "Sprungkoordinaten erfasst — Ausgang aufgedeckt.");
+                continue;
+            }
+
             contact.Discovery = DiscoveryState.Probed;
-            contact.ProbeExpiry = elapsed + 25f;
-            contact.SnapshotX = contact.PositionX;
-            contact.SnapshotY = contact.PositionY;
-            contact.SnapshotZ = contact.PositionZ;
+            contact.ProbeExpiry = -1f; // ghost timer starts in MissionController when probe coverage ends
+            // Snapshot is set in MissionController when probe coverage ends (live → ghost).
         }
 
         RevealResourceZonesInProbeRange(x, y, probe.RevealRadius);
@@ -200,6 +212,7 @@ public class TacticalCommandHandler
         var contact = _ctx.State.Contacts.Find(c => c.Id == contactId);
         if (contact == null) return false;
         if (contact.Discovery != DiscoveryState.Scanned) return false;
+        if (contact.Type != ContactType.Hostile) return false;
 
         if (contact.IsDesignated)
         {
@@ -224,6 +237,7 @@ public class TacticalCommandHandler
         var contact = _ctx.State.Contacts.Find(c => c.Id == contactId);
         if (contact == null) return false;
         if (contact.Discovery != DiscoveryState.Scanned) return false;
+        if (contact.Type != ContactType.Hostile) return false;
         if (contact.HasWeakness) return false;
         if (contact.WeaknessAnalysisProgress >= 100) return false;
 
@@ -309,14 +323,21 @@ public class TacticalCommandHandler
         float dx = contact.PositionX - _ctx.State.Ship.PositionX;
         float dy = contact.PositionY - _ctx.State.Ship.PositionY;
         float dist = MathF.Sqrt(dx * dx + dy * dy);
-        if (dist > bp.AnalyzeRange) return false;
+        // Must match MissionController.TickPoiAnalysis abort threshold (AnalyzeRange * 1.2f).
+        float maxStart = bp.AnalyzeRange * 1.2f;
+        if (dist > maxStart)
+        {
+            _ctx.AddLog("Tactical",
+                $"Tiefenscan: zu weit entfernt ({dist:F0} > {maxStart:F0} m — näher an das Ziel.");
+            return false;
+        }
 
         foreach (var c in _ctx.State.Contacts)
             c.PoiAnalyzing = false;
 
         contact.PoiAnalyzing = true;
         contact.PoiProgress = 0;
-        _ctx.AddLog("Tactical", $"POI-Analyse gestartet: {contact.DisplayName}");
+        _ctx.AddLog("Tactical", $"Tiefenscan gestartet: {contact.DisplayName}");
         _ctx.EmitStateChanged();
         return true;
     }

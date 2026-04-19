@@ -8,3 +8,36 @@ obj/
 *.user
 *.suo
 *.csproj.nuget.*
+
+# 3D models (and their Godot import sidecars)
+*.glb
+*.gltf
+*.fbx
+*.obj
+*.dae
+*.glb.import
+*.gltf.import
+*.fbx.import
+*.obj.import
+*.dae.import
+
+# Textures inside Assets/ (and their Godot import sidecars)
+Assets/**/*.png
+Assets/**/*.jpg
+Assets/**/*.jpeg
+Assets/**/*.tga
+Assets/**/*.exr
+Assets/**/*.hdr
+Assets/**/*.webp
+Assets/**/*.png.import
+Assets/**/*.jpg.import
+Assets/**/*.jpeg.import
+Assets/**/*.tga.import
+Assets/**/*.exr.import
+Assets/**/*.hdr.import
+Assets/**/*.webp.import
+
+# Blender source files / working directory
+blender/
+*.blend
+*.blend1

@@ -72,6 +72,7 @@ public class CaptainCommandHandler
 
         var option = decision.Options.Find(o => o.Id == optionId);
         _ctx.AddLog("Captain", $"Entscheidung: {decision.Title} → {option?.Label ?? optionId}");
+        _ctx.State.Mission.LastDecisionHighlight = $"{decision.Title} → {option?.Label ?? optionId}";
         _ctx.EmitStateChanged();
         return true;
     }

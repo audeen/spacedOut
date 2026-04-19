@@ -22,6 +22,25 @@ public class AgentSpawnProfile
 /// </summary>
 public static class AgentSpawnConfig
 {
+    /// <summary>
+    /// Threat-Pool Punktekosten pro Agent-Typ. Vom <see cref="SpacedOut.Run.IRunDirector"/> verwendet,
+    /// um Spawns gegen <see cref="SpacedOut.Run.PacingState.ThreatPool"/> zu budgetieren. Friedliche
+    /// Frachter/Trader sind billig, Hostile-Klassen teuer.
+    /// </summary>
+    public static readonly IReadOnlyDictionary<string, int> AgentCosts = new Dictionary<string, int>
+    {
+        // Hostile
+        { "pirate_raider", 2 },
+        { "pirate_corsair", 4 },
+        // Neutral / friendly
+        { "trader_ship", 1 },
+        { "cargo_hauler", 1 },
+    };
+
+    /// <summary>Returns the threat-pool cost for an agent type. Defaults to 1 for unknown ids.</summary>
+    public static int GetCost(string agentType) =>
+        AgentCosts.TryGetValue(agentType, out var c) ? c : 1;
+
     public static List<AgentSpawnProfile> GetProfiles(string biomeId, RunNodeType? nodeType)
     {
         bool hostile = nodeType == RunNodeType.Hostile;

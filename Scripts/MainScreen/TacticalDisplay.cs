@@ -96,6 +96,7 @@ public partial class TacticalDisplay : Control
         foreach (var entity in _sector.Entities)
         {
             if (entity.MapPresence != MapPresence.Point) continue;
+            if (entity.IsDestroyed) continue;
             if (entity.Discovery == DiscoveryState.Hidden && !entity.PreRevealed) continue;
 
             var mapPos = CoordinateMapper.WorldToMap3D(entity.WorldPosition, _sector.LevelRadius);
@@ -103,7 +104,8 @@ public partial class TacticalDisplay : Control
             float dy = mapPos.Y - _state.Ship.PositionY;
             float dz = mapPos.Z - shipAlt;
 
-            if (entity.Discovery == DiscoveryState.Detected && !entity.PreRevealed && !entity.RadarShowDetectedInFullRange && !entity.IsMovable)
+            if (entity.Discovery == DiscoveryState.Detected && !entity.PreRevealed &&
+                !entity.RadarShowDetectedInFullRange && !entity.PersistDetectedBeyondSensorRange && !entity.IsMovable)
             {
                 float dist2d = MathF.Sqrt(dx * dx + dy * dy);
                 if (dist2d > sensorRange / 3f) continue;

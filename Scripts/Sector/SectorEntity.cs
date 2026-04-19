@@ -16,9 +16,14 @@ public class SectorEntity
 
     public MapPresence MapPresence { get; set; } = MapPresence.None;
     public bool IsMissionRelevant { get; set; }
+    /// <summary>Biome-level flavor landmark (large orientation object, procedural fill).</summary>
     public bool IsLandmark { get; set; }
+    /// <summary>Mission-scoped primary objective; MissionGenerator remaps its contact id to <c>primary_target</c>.</summary>
+    public bool IsPrimaryObjective { get; set; }
 
     // Runtime state (mutated during gameplay)
+    /// <summary>Synced from runtime <see cref="SpacedOut.State.Contact.IsDestroyed"/> for map/3D visibility.</summary>
+    public bool IsDestroyed { get; set; }
     public DiscoveryState Discovery { get; set; } = DiscoveryState.Hidden;
     public float ScanProgress { get; set; }
     public string DisplayName { get; set; } = "";
@@ -31,6 +36,8 @@ public class SectorEntity
     /// If true, tactical radar shows this entity as Detected in the full sensor circle; if false, only in the inner third.
     /// </summary>
     public bool RadarShowDetectedInFullRange { get; set; }
+    /// <summary>When true, Detected is not downgraded when the ship leaves sensor range (synced with <see cref="SpacedOut.State.Contact.PersistDetectedBeyondSensorRange"/>).</summary>
+    public bool PersistDetectedBeyondSensorRange { get; set; }
 
     // Dynamic objects
     public Vector3 Velocity { get; set; }

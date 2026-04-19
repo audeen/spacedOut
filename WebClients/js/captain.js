@@ -4,6 +4,38 @@
  */
 
 let briefingShown = false;
+let pendingMissionBriefingText = null;
+
+function isDecisionResolutionOverlayOpen() {
+    const el = document.getElementById('decision-resolution-overlay');
+    return !!(el && !el.classList.contains('hidden'));
+}
+
+function syncDecisionResolutionCta() {
+    const btn = document.getElementById('decision-resolution-cta');
+    if (!btn) return;
+    const has = pendingMissionBriefingText != null && String(pendingMissionBriefingText).length > 0;
+    btn.textContent = has ? 'Zum Briefing' : 'Verstanden';
+}
+
+function onDecisionResolutionContinue() {
+    const dec = document.getElementById('decision-resolution-overlay');
+    if (dec) dec.classList.add('hidden');
+    client.resetDecisionResolutionOverlayChrome();
+
+    const brief = pendingMissionBriefingText;
+    pendingMissionBriefingText = null;
+    syncDecisionResolutionCta();
+
+    if (brief != null && String(brief).length > 0) {
+        briefingShown = true;
+        client.resetBriefingOverlayChrome();
+        const el = document.getElementById('briefing-text');
+        if (el) el.textContent = brief;
+        document.getElementById('briefing-overlay').classList.remove('hidden');
+    }
+}
+
 let logFilter = 'all';
 let currentLog = [];
 
@@ -56,14 +88,166 @@ client.onState((msg) => {
 
     currentLog = d.log || [];
     renderLog();
+
+    updateDockPanel(d);
+    updateRunResourcesPanel(d);
+    updateSectorJumpPanel(msg, d);
 });
 
+function updateSectorJumpPanel(msg, d) {
+    const panel = document.getElementById('sector-jump-panel');
+    const btn = document.getElementById('btn-leave-sector');
+    const hint = document.getElementById('sector-jump-hint');
+    if (!panel || !btn || !hint) return;
+
+    if (!msg.mission_started) {
+        panel.style.display = 'none';
+        return;
+    }
+    const phase = msg.mission_phase || '';
+    if (phase === 'Ended') {
+        panel.style.display = 'none';
+        return;
+    }
+    panel.style.display = '';
+    const ready = !!d.sector_jump_available;
+    btn.disabled = !ready;
+    hint.textContent = ready
+        ? 'Sprungbereit — Sie können den Sektor jetzt verlassen.'
+        : 'Am Sprungpunkt positionieren (Abstand typischerweise < 50 m). Relais/Scan ggf. vorher erforderlich.';
+}
+
+function sendLeaveSector() {
+    client.sendCommand('LeaveSector', {});
+    client.showToast('Sprung angefordert', 'info');
+}
+
+function updateRunResourcesPanel(d) {
+    const panel = document.getElementById('run-resources-panel');
+    if (!panel) return;
+    if (!d.run_active || !d.run_resources) {
+        panel.style.display = 'none';
+        return;
+    }
+    const res = d.run_resources;
+    panel.style.display = 'block';
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v ?? 0; };
+    set('rr-parts', res.SpareParts ?? 0);
+    set('rr-data', res.ScienceData ?? 0);
+    set('rr-fuel', res.Fuel ?? 0);
+    set('rr-credits', res.Credits ?? 0);
+
+    const perkRow = document.getElementById('rr-perk-row');
+    const perkEl = document.getElementById('rr-perk');
+    const perkName = d.perk_name || '';
+    if (perkRow && perkEl) {
+        if (perkName) {
+            perkRow.style.display = '';
+            perkEl.textContent = perkName;
+        } else {
+            perkRow.style.display = 'none';
+        }
+    }
+}
+
+function updateDockStock(d) {
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    if (!d.run_active || !d.run_resources) {
+        set('dock-stock-fuel', '—');
+        set('dock-stock-parts', '—');
+        set('dock-stock-data', '—');
+        set('dock-stock-credits', '—');
+        return;
+    }
+    const res = d.run_resources;
+    set('dock-stock-fuel', res.Fuel ?? 0);
+    set('dock-stock-parts', res.SpareParts ?? 0);
+    set('dock-stock-data', res.ScienceData ?? 0);
+    set('dock-stock-credits', res.Credits ?? 0);
+}
+
+function updateDockPanel(d) {
+    const panel = document.getElementById('dock-panel');
+    const statusLine = document.getElementById('dock-status-line');
+    const buyContainer = document.getElementById('dock-buy-container');
+    if (!panel || !statusLine || !buyContainer) return;
+
+    const dock = d.dock;
+    const docked = !!d.mission_docked;
+    if (!dock || dock.Available === false) {
+        panel.style.display = 'none';
+        return;
+    }
+
+    panel.style.display = 'block';
+    if (docked) {
+        statusLine.textContent = `Angedockt — Rep 1 Ersatzteil = ${dock.HullPerPart} Hülle`;
+        statusLine.className = 'text-green';
+        buyContainer.style.display = 'block';
+        document.getElementById('dock-fuel-price').textContent = `${dock.FuelPrice} Cr / Einheit (Kauf)`;
+        document.getElementById('dock-fuel-sell-price').textContent = `${dock.FuelSellPrice} Cr / Einheit (Ankauf)`;
+        document.getElementById('dock-parts-price').textContent = `${dock.PartsPrice} Cr / Einheit (Kauf)`;
+        document.getElementById('dock-parts-sell-price').textContent = `${dock.PartsSellPrice} Cr / Einheit (Ankauf)`;
+        document.getElementById('dock-data-price').textContent = `${dock.DataPrice} Cr / Einheit (Kauf)`;
+        document.getElementById('dock-data-sell-price').textContent = `${dock.DataSellPrice} Cr / Einheit (Ankauf)`;
+        updateDockStock(d);
+    } else {
+        const dist = typeof d.dock_distance === 'number' ? d.dock_distance : -1;
+        const sl = d.speed_level ?? 2;
+        const range = dock.ProximityRange ?? 60;
+        const maxSpeed = dock.MaxSpeedLevel ?? 2;
+        let hint;
+        if (dist < 0) hint = 'Andockmast in diesem Sektor — anfliegen für Handel.';
+        else if (dist > range) hint = `Andockmast: ${dist.toFixed(0)} m · Speed ${sl} — näher heran (≤${range} m).`;
+        else if (sl > maxSpeed) hint = `Andockmast: ${dist.toFixed(0)} m · Speed ${sl} — zu schnell (≤${maxSpeed}).`;
+        else hint = `Andockmast: ${dist.toFixed(0)} m · Speed ${sl} — Andocken läuft...`;
+        statusLine.textContent = hint;
+        statusLine.className = 'text-cyan';
+        buyContainer.style.display = 'none';
+    }
+}
+
+let _dockTradeLastKey = '';
+let _dockTradeLastAt = 0;
+
+function dockBuy(resource, qty) {
+    const key = `buy:${resource}:${qty}`;
+    const t = Date.now();
+    if (key === _dockTradeLastKey && t - _dockTradeLastAt < 450) return;
+    _dockTradeLastKey = key;
+    _dockTradeLastAt = t;
+    client.sendCommand('DockBuyResource', { resource, qty });
+}
+
+function dockSell(resource, qty) {
+    const key = `sell:${resource}:${qty}`;
+    const t = Date.now();
+    if (key === _dockTradeLastKey && t - _dockTradeLastAt < 450) return;
+    _dockTradeLastKey = key;
+    _dockTradeLastAt = t;
+    client.sendCommand('DockSellResource', { resource, qty });
+}
+
 client.on('mission_started', (msg) => {
+    if (msg.briefing) {
+        pendingMissionBriefingText = msg.briefing;
+    }
+    if (isDecisionResolutionOverlayOpen()) {
+        syncDecisionResolutionCta();
+        return;
+    }
     if (!briefingShown && msg.briefing) {
         briefingShown = true;
+        pendingMissionBriefingText = null;
+        client.resetBriefingOverlayChrome();
         document.getElementById('briefing-text').textContent = msg.briefing;
         document.getElementById('briefing-overlay').classList.remove('hidden');
     }
+});
+
+client.on('decision_resolved', (msg) => {
+    if (msg && msg.resolution_style === 'toast') return;
+    syncDecisionResolutionCta();
 });
 
 client.on('paused', () => document.getElementById('paused-overlay').classList.remove('hidden'));
@@ -94,6 +278,7 @@ client.on('mission_ended', (msg) => {
 
 function dismissBriefing() {
     document.getElementById('briefing-overlay').classList.add('hidden');
+    client.resetBriefingOverlayChrome();
 }
 
 // --- Decisions with urgency ---
@@ -128,9 +313,10 @@ function renderDecisions(decisions) {
             <div class="decision-options">
                 ${dec.Options.map(opt => `
                     <button class="btn btn-primary btn-block" data-decision-id="${dec.Id}" data-option-id="${opt.Id}"
-                            style="text-align:left; justify-content:flex-start;">
+                            style="text-align:left; justify-content:flex-start; flex-direction:column; align-items:flex-start;">
                         <strong>${opt.Label}</strong>
-                        <span class="text-dim" style="font-size:11px; margin-left:8px;">${opt.Description}</span>
+                        <span class="text-dim" style="font-size:11px;">${opt.Description}</span>
+                        ${opt.FlavorHint ? `<span class="text-cyan" style="font-size:11px; font-style:italic;">${opt.FlavorHint}</span>` : ''}
                     </button>
                 `).join('')}
             </div>

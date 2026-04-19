@@ -20,6 +20,11 @@ public static class MissionScriptCatalog
         BiomeId = "asteroid_field",
         LevelRadiusMultiplier = 5f,
 
+        UseOnlyScriptTriggers = true,
+        PauseActiveEventTimers = false,
+        FailMissionWhenRecoveryWindowExpires = false,
+        DisableBiomeLandmark = true,
+
         Initial = new InitialConditions
         {
             HullIntegrity = 95f,
@@ -32,10 +37,15 @@ public static class MissionScriptCatalog
             },
         },
 
-        Landmark = new LandmarkOverride
+        PrimaryObjective = new PrimaryObjective
         {
-            DefaultName = "Schwaches Signal",
+            AssetId = "station_relay",
+            PoiBlueprintId = "navigation_relay",
+            DefaultName = "Unbekanntes Signal",
             ClassifiedName = "Navigationsrelais",
+            Placement = MarkerPlacementRule.SectorCenter,
+            HiddenUntilDiscovered = true,
+            HideExitUntilScanned = true,
         },
 
         MissionMarkers = new List<MissionMarkerPlacement>
@@ -99,6 +109,12 @@ public static class MissionScriptCatalog
             },
             new()
             {
+                Ref = TriggerRef.Encounter, Radius = 200f,
+                EventId = "unknown_approach",
+                Once = true,
+            },
+            new()
+            {
                 Ref = TriggerRef.Landmark, Radius = 250f,
                 EventId = "corsair_spawn",
                 LogEntry = "[System] Weiterer Kontakt nahe dem Relais. Bewaffnet.",
@@ -130,7 +146,7 @@ public static class MissionScriptCatalog
             {
                 Name = "Navigationsrelais",
                 Type = ContactType.Neutral,
-                Log = "Relais aktiv. Koordinaten-Download m\u00f6glich.",
+                Log = "Relais aktiv. Tiefe Navigationsspeicher verschl\u00fcsselt — Tiefenscan und Extraktion durch den Maschinenraum erforderlich, bevor Sprungdaten bereitstehen.",
             },
             ["pirate_raider"] = new()
             {
@@ -161,6 +177,7 @@ public static class MissionScriptCatalog
                 Duration = 60f,
                 DecisionId = "beacon_choice",
                 LogEntry = "[System] Boje sendet automatische Nachricht: \u201e...Konvoi \u00fcberfallen... Frachter ARGOS verloren... Piraten operieren nahe dem Relais... Warnung an alle Schiffe...\u201c",
+                ShowOnMainScreen = false,
             },
         },
 

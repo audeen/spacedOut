@@ -25,6 +25,7 @@ public enum SectorEntityType
     UtilityNode,
     ExitMarker,
     EncounterMarker,
+    MissionStructure,
 
     // Dynamic contacts (Point on map)
     PatrolDrone,

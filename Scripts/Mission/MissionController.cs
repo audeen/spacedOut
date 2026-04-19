@@ -5,6 +5,7 @@ using SpacedOut.Agents;
 using SpacedOut.Run;
 using SpacedOut.Shared;
 using SpacedOut.State;
+using SpacedOut.Tactical;
 
 namespace SpacedOut.Mission;
 
@@ -21,6 +22,27 @@ public partial class MissionController : Node
     private readonly HashSet<int> _firedTimeTriggers = new();
     private NodeEncounterConfig? _encounterConfig;
     private MissionScript? _script;
+
+    /// <summary>Runtime-only proximity triggers appended by <see cref="NodeEventCatalog"/> picks (parallel to <see cref="MissionScript.ProximityTriggers"/>).</summary>
+    private readonly List<ProximityTrigger> _runtimeProximityTriggers = new();
+    /// <summary>Runtime-only time triggers appended by <see cref="NodeEventCatalog"/> picks (parallel to <see cref="MissionScript.TimeTriggers"/>).</summary>
+    private readonly List<TimeTrigger> _runtimeTimeTriggers = new();
+    private readonly HashSet<int> _firedRuntimeProximity = new();
+    private readonly HashSet<int> _firedRuntimeTimeTriggers = new();
+    /// <summary>Runtime-only deferred spawns queued via <see cref="QueueDeferredSpawns"/> (e.g. from decision effects).</summary>
+    private readonly List<DeferredAgentSpawn> _runtimeDeferredSpawns = new();
+    /// <summary>
+    /// Spawns queued from a <see cref="NodeEventTrigger.PreSector"/> decision before the next
+    /// sector exists. Carried into the upcoming sector by <see cref="StartMission"/> and fired
+    /// once the new sector is fully initialised. See <see cref="QueueSectorEntrySpawns"/>.
+    /// </summary>
+    private readonly List<DeferredAgentSpawn> _pendingSectorEntrySpawns = new();
+    /// <summary>Trigger ids whose deferred spawns must auto-fire on the next <see cref="StartMission"/>.</summary>
+    private readonly HashSet<string> _pendingSectorEntryTriggers = new();
+    /// <summary>Runtime-only scripted decisions registered via <see cref="RegisterRuntimeDecision"/> (e.g. from <see cref="NodeEventCatalog"/>).</summary>
+    private readonly Dictionary<string, ScriptedDecision> _runtimeDecisions = new();
+    /// <summary>Runtime-only scripted events registered via <see cref="RegisterRuntimeEvent"/>.</summary>
+    private readonly Dictionary<string, ScriptedEvent> _runtimeEvents = new();
     private bool _useStructuredPhases;
 
     private const float DefaultPhase1End = 60f;
@@ -28,6 +50,32 @@ public partial class MissionController : Node
     private const float DefaultPhase3End = 420f;
 
     private float _damageMultiplier = 1f;
+
+    /// <summary>
+    /// Director-Heartbeat: wird vom <see cref="Update"/>-Pfad gefeuert, sobald
+    /// <see cref="State.MissionState.ElapsedTime"/> die nächste 30-Sekunden-Schwelle erreicht.
+    /// Wiring übernimmt <see cref="SpacedOut.Orchestration.MissionOrchestrator"/>.
+    /// Argument: Sekunden seit dem vorherigen Heartbeat-Tick (für Diagnose).
+    /// </summary>
+    public Action<float>? OnHeartbeatHook { get; set; }
+
+    /// <summary>
+    /// Wird gefeuert, sobald ein Hostile-Kontakt im aktiven Sektor zerstört wurde
+    /// (Gunner-Kill und Agent-State-Übergang Destroyed). Argument: Contact-Id.
+    /// </summary>
+    public Action<string>? OnHostileDestroyedHook { get; set; }
+
+    /// <summary>Mission-ElapsedTime in Sekunden (read-only Spiegel auf <see cref="State.MissionState.ElapsedTime"/>).</summary>
+    public float ElapsedTime => _state?.Mission.ElapsedTime ?? 0f;
+
+    /// <summary>Letzter Mission-ElapsedTime, an dem der Director-Heartbeat-Hook gefeuert wurde.</summary>
+    private float _lastHeartbeatAtElapsed;
+
+    /// <summary>Hostile-Kontakte, die im letzten Tick noch lebten (für Edge-Trigger des Destroyed-Hooks).</summary>
+    private readonly HashSet<string> _trackedHostileAliveIds = new();
+
+    /// <summary>Bereits an den Director gemeldete Destroyed-Hostiles (verhindert doppeltes Feuern).</summary>
+    private readonly HashSet<string> _reportedDestroyedHostileIds = new();
 
     public void Initialize(GameState state)
     {
@@ -44,6 +92,9 @@ public partial class MissionController : Node
     public void ApplyMissionScript(MissionScript? script)
     {
         _script = script;
+        _state.Mission.ScriptLocksExitUntilScan =
+            script?.PrimaryObjective?.HideExitUntilScanned ?? false;
+        _state.Mission.ProceduralSectorMission = script == null;
     }
 
     public void StartMission()
@@ -51,13 +102,29 @@ public partial class MissionController : Node
         _triggeredEvents.Clear();
         _state.MissionStarted = true;
         _state.Mission.ElapsedTime = 0;
+        _lastHeartbeatAtElapsed = 0f;
+        _trackedHostileAliveIds.Clear();
+        _reportedDestroyedHostileIds.Clear();
+        // Wipe leftover runtime spawns from previous sector — only sector-entry pending spawns
+        // (queued from a PreSector decision below) survive into this fresh sector.
+        _runtimeDeferredSpawns.Clear();
         _state.Mission.PrimaryObjective = ObjectiveStatus.InProgress;
         _state.Mission.SecondaryObjective = ObjectiveStatus.InProgress;
         _state.Mission.UseStructuredMissionPhases = _useStructuredPhases;
 
+        // M1b: snapshot run resources so the HUD can show the sector harvest delta live.
+        _state.Mission.MissionStartResourcesSnapshot.Clear();
+        if (_state.ActiveRunState != null)
+        {
+            foreach (var kv in _state.ActiveRunState.Resources)
+                _state.Mission.MissionStartResourcesSnapshot[kv.Key] = kv.Value;
+        }
+
         _state.Ship.FlightMode = FlightMode.Cruise;
         _state.Ship.SpeedLevel = 2;
-        _state.Ship.HullIntegrity = 100;
+        // M7: respect MaxHullOverride when restoring run hull at mission start.
+        var hullCap = _state.ActiveRunState?.MaxHullOverride ?? 100f;
+        _state.Ship.HullIntegrity = MathF.Min(hullCap, _state.ActiveRunState?.CurrentHull ?? 100f);
         _state.Engagement = EngagementRule.Standard;
         _state.Gunner = new GunnerState();
 
@@ -78,15 +145,15 @@ public partial class MissionController : Node
         if (string.IsNullOrEmpty(_state.Mission.BriefingText))
             _state.Mission.BriefingText = "Mission aktiv.";
 
-        _state.Mission.Log.Add(new MissionLogEntry
+        _state.AddMissionLogEntry(new MissionLogEntry
         {
             Timestamp = 0,
             Source = "System",
-            Message = $"Mission gestartet: {_state.Mission.MissionTitle}"
+            Message = $"Mission gestartet: {_state.Mission.MissionTitle}",
+            WebToast = MissionLogWebToast.ToastProminent,
         });
 
         ApplyScriptInitialConditions();
-        ApplyScriptLandmarkOverride();
 
         if (_useStructuredPhases)
         {
@@ -98,6 +165,39 @@ public partial class MissionController : Node
             _state.Mission.Phase = MissionPhase.Operational;
             _state.Mission.PhaseTimer = 0;
         }
+
+        _state.Mission.ProceduralSectorMission = _script == null;
+
+        FlushPendingSectorEntrySpawns();
+    }
+
+    /// <summary>
+    /// Materialises spawns queued via <see cref="QueueSectorEntrySpawns"/> (from PreSector
+    /// decisions) into the now-fully-initialised sector, then dispatches each unique trigger id
+    /// once. Logs counts so the flow is traceable in Godot's console.
+    /// </summary>
+    private void FlushPendingSectorEntrySpawns()
+    {
+        if (_pendingSectorEntrySpawns.Count == 0 && _pendingSectorEntryTriggers.Count == 0) return;
+
+        if (_pendingSectorEntrySpawns.Count > 0)
+        {
+            foreach (var s in _pendingSectorEntrySpawns)
+                _runtimeDeferredSpawns.Add(s);
+        }
+
+        int spawnedTriggers = 0;
+        foreach (var triggerId in _pendingSectorEntryTriggers)
+        {
+            if (string.IsNullOrEmpty(triggerId)) continue;
+            SpawnDeferredAgents(triggerId);
+            spawnedTriggers++;
+        }
+
+        GD.Print($"[MissionController] Flushed {_pendingSectorEntrySpawns.Count} pre-sector spawn(s) over {spawnedTriggers} trigger(s).");
+
+        _pendingSectorEntrySpawns.Clear();
+        _pendingSectorEntryTriggers.Clear();
     }
 
     private void ApplyScriptInitialConditions()
@@ -115,17 +215,6 @@ public partial class MissionController : Node
             if (over.Status.HasValue)
                 sys.Status = over.Status.Value;
         }
-    }
-
-    private void ApplyScriptLandmarkOverride()
-    {
-        if (_script?.Landmark == null) return;
-
-        var landmark = _state.Contacts.Find(c => c.Id == "primary_target");
-        if (landmark == null) return;
-
-        if (!string.IsNullOrEmpty(_script.Landmark.DefaultName))
-            landmark.DisplayName = _script.Landmark.DefaultName;
     }
 
     private void SetupContacts()
@@ -185,8 +274,10 @@ public partial class MissionController : Node
 
         UpdateShipMovement(delta);
         UpdateSystems(delta);
-        UpdateSensorVisibility();
         UpdateProbes(delta);
+        UpdateProbedProbeCoverage();
+        UpdateSensorVisibility();
+        ClampHiddenExitUntilRelayUnlock();
         UpdateScanning(delta);
         UpdateWeaknessAnalysis(delta);
         UpdateGunner(delta);
@@ -195,19 +286,158 @@ public partial class MissionController : Node
         UpdateOverlays(delta);
         UpdateAgents(delta);
         UpdateContactMovement(delta);
+        UpdateDockProximity();
         if (_useStructuredPhases)
             CheckPhaseTransitions();
         CheckEvents();
         CheckScriptTriggers();
+        TrackHostileDestructions();
+        CheckDirectorHeartbeat();
         CheckEndConditions(delta);
+    }
+
+    /// <summary>
+    /// Fires <see cref="OnHeartbeatHook"/> roughly every <c>HeartbeatIntervalSec</c> (30s by
+    /// convention with <see cref="SpacedOut.Run.EscalatingDirector.HeartbeatIntervalSec"/>).
+    /// Director-Implementation does the actual decision (cooldown, pool, cap).
+    /// </summary>
+    private void CheckDirectorHeartbeat()
+    {
+        if (OnHeartbeatHook == null) return;
+        const float heartbeatIntervalSec = 30f;
+        float elapsed = _state.Mission.ElapsedTime;
+        if (elapsed - _lastHeartbeatAtElapsed < heartbeatIntervalSec) return;
+        float dt = elapsed - _lastHeartbeatAtElapsed;
+        _lastHeartbeatAtElapsed = elapsed;
+        OnHeartbeatHook.Invoke(dt);
+    }
+
+    /// <summary>
+    /// Edge-detect: feuert <see cref="OnHostileDestroyedHook"/> einmalig pro Hostile-Kontakt,
+    /// sobald dieser nicht mehr lebt (HitPoints <= 0, IsDestroyed, Type-Wechsel auf Neutral durch
+    /// Wreck-Conversion). Bewusst poll-basiert statt direkter Hook-Aufruf in
+    /// <see cref="GunnerFireAction"/>, damit auch Wreck-Conversion und Debug-Kills erfasst werden.
+    /// </summary>
+    private void TrackHostileDestructions()
+    {
+        if (OnHostileDestroyedHook == null)
+        {
+            _trackedHostileAliveIds.Clear();
+            return;
+        }
+
+        var aliveNow = new HashSet<string>();
+        for (int i = 0; i < _state.Contacts.Count; i++)
+        {
+            var c = _state.Contacts[i];
+            if (c.Type == ContactType.Hostile && !c.IsDestroyed && c.HitPoints > 0)
+                aliveNow.Add(c.Id);
+        }
+
+        foreach (var id in _trackedHostileAliveIds)
+        {
+            if (aliveNow.Contains(id)) continue;
+            if (_reportedDestroyedHostileIds.Contains(id)) continue;
+            _reportedDestroyedHostileIds.Add(id);
+            OnHostileDestroyedHook.Invoke(id);
+        }
+
+        _trackedHostileAliveIds.Clear();
+        foreach (var id in aliveNow)
+            _trackedHostileAliveIds.Add(id);
+    }
+
+    private const float DockProximityRange = 60f;
+    private const int DockMaxSpeedLevel = 2; // SpeedLevel <= 2 (Cruise default) counts as "low enough to dock"
+
+    /// <summary>
+    /// M5: flips <see cref="MissionState.Docked"/> while the ship hovers close to a
+    /// <c>station_dock</c> contact at low speed. Only active in Station sectors
+    /// (<see cref="MissionState.Dock"/> != null).
+    /// </summary>
+    private void UpdateDockProximity()
+    {
+        var m = _state.Mission;
+        if (m.Dock == null)
+        {
+            m.DockDistance = -1f;
+            if (m.Docked)
+            {
+                m.Docked = false;
+                m.DockedContactId = null;
+            }
+            return;
+        }
+
+        var dock = _state.Contacts.Find(c => c.Id == "station_dock");
+        if (dock == null)
+        {
+            m.DockDistance = -1f;
+            if (m.Docked)
+            {
+                m.Docked = false;
+                m.DockedContactId = null;
+            }
+            return;
+        }
+
+        var ship = _state.Ship;
+        float dx = ship.PositionX - dock.PositionX;
+        float dy = ship.PositionY - dock.PositionY;
+        float dz = ship.PositionZ - dock.PositionZ;
+        float dist = MathF.Sqrt(dx * dx + dy * dy + dz * dz);
+        m.DockDistance = dist;
+
+        bool nowDocked = dist < DockProximityRange && ship.SpeedLevel <= DockMaxSpeedLevel;
+        if (nowDocked == m.Docked) return;
+
+        m.Docked = nowDocked;
+        m.DockedContactId = nowDocked ? dock.Id : null;
+        _state.AddMissionLogEntry(new MissionLogEntry
+        {
+            Timestamp = m.ElapsedTime,
+            Source = "System",
+            Message = nowDocked ? "Andocken bestätigt." : "Abgedockt.",
+            WebToast = MissionLogWebToast.Toast,
+        });
     }
 
     private void UpdateShipMovement(float delta)
     {
         var route = _state.Route;
         var ship = _state.Ship;
+        var tt = _state.Navigation.TargetTracking;
 
         if (ship.FlightMode == FlightMode.Hold) return;
+
+        if (tt.Mode != TargetTrackingMode.None)
+        {
+            var contact = ShipCalculations.FindValidTrackingContact(_state, tt);
+            if (contact == null)
+            {
+                tt.Clear();
+                _state.AddMissionLogEntry(new MissionLogEntry
+                {
+                    Timestamp = _state.Mission.ElapsedTime,
+                    Source = "Navigation",
+                    Message = "Zielverfolgung beendet (Kontakt nicht verfügbar)",
+                    WebToast = MissionLogWebToast.LogOnly,
+                });
+            }
+            else
+            {
+                if (tt.Mode == TargetTrackingMode.Orbit)
+                    ShipCalculations.AdvanceOrbitAngle(tt, ship, delta);
+
+                if (ShipCalculations.TryGetTrackingSteerTarget(tt, ship, contact, out var tx, out var ty, out var tz,
+                        out var shouldMove))
+                {
+                    if (shouldMove)
+                        ShipCalculations.StepShipToward(ship, tx, ty, tz, delta);
+                    return;
+                }
+            }
+        }
 
         var unreached = route.Waypoints.FindAll(w => !w.IsReached);
         if (unreached.Count == 0) return;
@@ -222,28 +452,17 @@ public partial class MissionController : Node
         {
             target.IsReached = true;
             route.CurrentWaypointIndex++;
-            _state.Mission.Log.Add(new MissionLogEntry
+            _state.AddMissionLogEntry(new MissionLogEntry
             {
                 Timestamp = _state.Mission.ElapsedTime,
                 Source = "Navigation",
-                Message = $"Waypoint erreicht: {target.Label}"
+                Message = $"Waypoint erreicht: {target.Label}",
+                WebToast = MissionLogWebToast.LogOnly,
             });
             return;
         }
 
-        float speed = ShipCalculations.CalculateShipSpeed(ship);
-
-        float moveX = (dx / dist) * speed * delta;
-        float moveY = (dy / dist) * speed * delta;
-        float moveZ = (dz / dist) * speed * delta;
-
-        if (MathF.Abs(moveX) > MathF.Abs(dx)) moveX = dx;
-        if (MathF.Abs(moveY) > MathF.Abs(dy)) moveY = dy;
-        if (MathF.Abs(moveZ) > MathF.Abs(dz)) moveZ = dz;
-
-        ship.PositionX += moveX;
-        ship.PositionY += moveY;
-        ship.PositionZ += moveZ;
+        ShipCalculations.StepShipToward(ship, target.X, target.Y, target.Z, delta);
     }
 
     private void UpdateSystems(float delta)
@@ -285,11 +504,12 @@ public partial class MissionController : Node
             if (sys.Heat >= ShipSystem.MaxHeat && sys.Status != SystemStatus.Offline)
             {
                 sys.Status = SystemStatus.Offline;
-                _state.Mission.Log.Add(new MissionLogEntry
+                _state.AddMissionLogEntry(new MissionLogEntry
                 {
                     Timestamp = _state.Mission.ElapsedTime,
                     Source = "System",
-                    Message = $"⚠ {kvp.Key} automatisch abgeschaltet (Überhitzung)"
+                    Message = $"⚠ {kvp.Key} automatisch abgeschaltet (Überhitzung)",
+                    WebToast = MissionLogWebToast.Toast,
                 });
             }
             else if (sys.Heat >= ShipSystem.CriticalHeatThreshold && sys.Status == SystemStatus.Operational)
@@ -306,14 +526,33 @@ public partial class MissionController : Node
                     sys.IsRepairing = false;
                     sys.Status = SystemStatus.Operational;
                     sys.Heat = Math.Max(sys.Heat - 30f, 0);
-                    _state.Mission.Log.Add(new MissionLogEntry
+                    _state.AddMissionLogEntry(new MissionLogEntry
                     {
                         Timestamp = _state.Mission.ElapsedTime,
                         Source = "Engineer",
-                        Message = $"System repariert: {kvp.Key}"
+                        Message = $"System repariert: {kvp.Key}",
+                        WebToast = MissionLogWebToast.Toast,
                     });
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// Tutorial: <c>sector_exit</c> must not become Probed/Detected from probes or other effects until
+    /// <see cref="MissionState.JumpCoordinatesUnlocked"/> (after relay extraction).
+    /// </summary>
+    private void ClampHiddenExitUntilRelayUnlock()
+    {
+        if (_script?.PrimaryObjective?.HideExitUntilScanned != true) return;
+        if (_state.Mission.JumpCoordinatesUnlocked) return;
+        var exit = _state.Contacts.Find(c => c.Id == "sector_exit");
+        if (exit == null) return;
+        if (exit.Discovery != DiscoveryState.Hidden)
+        {
+            exit.Discovery = DiscoveryState.Hidden;
+            exit.IsScanning = false;
+            exit.ScanProgress = 0;
         }
     }
 
@@ -325,6 +564,33 @@ public partial class MissionController : Node
 
         foreach (var contact in _state.Contacts)
         {
+            // Procedural exit: same unlock as a probe hit when the ship is within sensor range.
+            // Tutorial (ScriptLocksExitUntilScan) keeps the exit hidden until relay/script events.
+            if (contact.Id == "sector_exit" && !_state.Mission.JumpCoordinatesUnlocked)
+            {
+                if (reveal)
+                    SectorExitCoordinateUnlock.ApplyDebugPassiveReveal(_state.Mission, contact);
+                else if (!_state.Mission.ScriptLocksExitUntilScan)
+                {
+                    float dxExit = contact.PositionX - _state.Ship.PositionX;
+                    float dyExit = contact.PositionY - _state.Ship.PositionY;
+                    float distExit = MathF.Sqrt(dxExit * dxExit + dyExit * dyExit);
+                    if (distExit <= sensorRange &&
+                        SectorExitCoordinateUnlock.TryApplyIfEligible(_state.Mission, contact))
+                    {
+                        _state.AddMissionLogEntry(new MissionLogEntry
+                        {
+                            Timestamp = _state.Mission.ElapsedTime,
+                            Source = "Tactical",
+                            Message = "Sprungkoordinaten erfasst — Ausgang aufgedeckt.",
+                            WebToast = MissionLogWebToast.ToastProminent,
+                        });
+                    }
+                }
+
+                continue;
+            }
+
             if (contact.PreRevealed) continue;
             if (contact.Discovery == DiscoveryState.Scanned) continue;
 
@@ -340,13 +606,39 @@ public partial class MissionController : Node
 
             if (dist <= sensorRange)
             {
+                // Align with tactical.js / TacticalDisplay: passive Detected blips only in inner third (or full if flag).
+                float strongR = contact.RadarShowDetectedInFullRange
+                    ? sensorRange
+                    : sensorRange / 3f;
+                bool probeGhostDone = contact.ProbeExpiry >= 0f && elapsed >= contact.ProbeExpiry;
+                bool inStrongPassive = dist <= strongR;
+
+                if (contact.Discovery == DiscoveryState.Probed)
+                {
+                    if (inStrongPassive)
+                    {
+                        contact.Discovery = DiscoveryState.Detected;
+                        continue;
+                    }
+
+                    if (probeGhostDone)
+                    {
+                        contact.Discovery = DiscoveryState.Hidden;
+                        contact.IsScanning = false;
+                    }
+
+                    continue;
+                }
+
                 contact.Discovery = DiscoveryState.Detected;
+                continue;
             }
-            else if (contact.Discovery == DiscoveryState.Detected)
+            else if (contact.Discovery == DiscoveryState.Detected && !contact.PersistDetectedBeyondSensorRange)
             {
                 contact.Discovery = DiscoveryState.Hidden;
             }
-            else if (contact.Discovery == DiscoveryState.Probed && elapsed >= contact.ProbeExpiry)
+            else if (contact.Discovery == DiscoveryState.Probed && contact.ProbeExpiry >= 0f &&
+                     elapsed >= contact.ProbeExpiry)
             {
                 contact.Discovery = DiscoveryState.Hidden;
                 contact.IsScanning = false;
@@ -384,6 +676,45 @@ public partial class MissionController : Node
         }
     }
 
+    /// <summary>
+    /// While an active probe ring covers a Probed contact, radar shows live position; when coverage ends,
+    /// freeze <see cref="Contact.SnapshotX"/> for ghost display until <see cref="Contact.ProbeExpiry"/>.
+    /// </summary>
+    private void UpdateProbedProbeCoverage()
+    {
+        var probes = _state.ContactsState.ActiveProbes;
+        foreach (var contact in _state.Contacts)
+        {
+            if (contact.Discovery != DiscoveryState.Probed)
+            {
+                contact.ProbeCoveredLastFrame = false;
+                continue;
+            }
+
+            bool covered = false;
+            foreach (var p in probes)
+            {
+                float dx = contact.PositionX - p.X;
+                float dy = contact.PositionY - p.Y;
+                if (MathF.Sqrt(dx * dx + dy * dy) <= p.RevealRadius)
+                {
+                    covered = true;
+                    break;
+                }
+            }
+
+            if (contact.ProbeCoveredLastFrame && !covered)
+            {
+                contact.SnapshotX = contact.PositionX;
+                contact.SnapshotY = contact.PositionY;
+                contact.SnapshotZ = contact.PositionZ;
+                contact.ProbeExpiry = _state.Mission.ElapsedTime + ContactsState.ProbeGhostMemorySeconds;
+            }
+
+            contact.ProbeCoveredLastFrame = covered;
+        }
+    }
+
     private void UpdateScanning(float delta)
     {
         bool instant = _state.Debug.InstantScans;
@@ -398,6 +729,12 @@ public partial class MissionController : Node
         {
             if (!contact.IsScanning || contact.ScanProgress >= 100) continue;
             if (contact.Discovery == DiscoveryState.Hidden)
+            {
+                contact.IsScanning = false;
+                continue;
+            }
+
+            if (!ContactScanRules.CanScanContact(contact, _state))
             {
                 contact.IsScanning = false;
                 continue;
@@ -454,11 +791,12 @@ public partial class MissionController : Node
             }
         }
 
-        _state.Mission.Log.Add(new MissionLogEntry
+        _state.AddMissionLogEntry(new MissionLogEntry
         {
             Timestamp = _state.Mission.ElapsedTime,
             Source = "Tactical",
-            Message = $"Kontakt klassifiziert: {contact.DisplayName} ({contact.Type})"
+            Message = $"Kontakt klassifiziert: {contact.DisplayName} ({contact.Type})",
+            WebToast = MissionLogWebToast.Toast,
         });
     }
 
@@ -481,11 +819,12 @@ public partial class MissionController : Node
             contact.Type = cls.Type.Value;
         if (cls.Log != null)
         {
-            _state.Mission.Log.Add(new MissionLogEntry
+            _state.AddMissionLogEntry(new MissionLogEntry
             {
                 Timestamp = _state.Mission.ElapsedTime,
                 Source = "System",
                 Message = cls.Log,
+                WebToast = MissionLogWebToast.Toast,
             });
         }
         return true;
@@ -506,6 +845,7 @@ public partial class MissionController : Node
     {
         foreach (var contact in _state.Contacts)
         {
+            if (contact.IsDestroyed) continue;
             contact.PositionX += contact.VelocityX * delta;
             contact.PositionY += contact.VelocityY * delta;
             contact.PositionZ += contact.VelocityZ * delta;
@@ -519,12 +859,9 @@ public partial class MissionController : Node
         for (int i = _state.Contacts.Count - 1; i >= 0; i--)
         {
             var c = _state.Contacts[i];
+            // Gunner loot wrecks clear Agent — only transit/flee despawn uses Destroyed mode here.
             if (c.Agent?.Mode == AgentBehaviorMode.Destroyed && !c.IsDestroyed)
-            {
-                c.IsDestroyed = true;
-                c.VelocityX = 0;
-                c.VelocityY = 0;
-            }
+                c.ApplyCombatDestruction();
         }
     }
 
@@ -560,11 +897,12 @@ public partial class MissionController : Node
             {
                 contact.IsAnalyzing = false;
                 contact.HasWeakness = true;
-                _state.Mission.Log.Add(new MissionLogEntry
+                _state.AddMissionLogEntry(new MissionLogEntry
                 {
                     Timestamp = _state.Mission.ElapsedTime,
                     Source = "Tactical",
-                    Message = $"Schwachstelle identifiziert: {contact.DisplayName} (+50% Schaden für Gunner)"
+                    Message = $"Schwachstelle identifiziert: {contact.DisplayName} (+50% Schaden für Gunner)",
+                    WebToast = MissionLogWebToast.Toast,
                 });
             }
         }
@@ -685,7 +1023,7 @@ public partial class MissionController : Node
 
             contact.AttackCooldown = contact.AttackInterval;
 
-            var (pvx, pvy) = ShipCalculations.GetShipVelocityXY(_state.Ship, _state.Route);
+            var (pvx, pvy) = ShipCalculations.GetShipVelocityXY(_state);
             float lateral = CombatAccuracy.ComputeLateralRelativeSpeed(
                 contact.VelocityX, contact.VelocityY, pvx, pvy, dx, dy, dist);
 
@@ -696,13 +1034,30 @@ public partial class MissionController : Node
                 dist, lateral, effectiveRange, enemyAcc, contact.ThreatLevel,
                 _state.Ship.FlightMode, playerSpeed, _state.Engagement);
 
-            if (!CombatAccuracy.RollHit(pHit, forceEnemyHit))
+            bool enemyHit = CombatAccuracy.RollHit(pHit, forceEnemyHit);
+
+            var enemyVisual = WeaponVisualKind.KineticTracer;
+            if (contact.Agent != null &&
+                AgentDefinition.TryGet(contact.Agent.AgentType, out var enemyDef))
+                enemyVisual = enemyDef.WeaponVisual;
+
+            _state.CombatFx.PendingShots.Add(new ShotEvent
             {
-                _state.Mission.Log.Add(new MissionLogEntry
+                ShooterId = contact.Id,
+                TargetId = "player",
+                Visual = enemyVisual,
+                Hit = enemyHit,
+                TimestampSec = _state.Mission.ElapsedTime,
+            });
+
+            if (!enemyHit)
+            {
+                _state.AddMissionLogEntry(new MissionLogEntry
                 {
                     Timestamp = _state.Mission.ElapsedTime,
                     Source = "System",
-                    Message = $"{contact.DisplayName}: Salve verfehlt"
+                    Message = $"{contact.DisplayName}: Salve verfehlt",
+                    WebToast = MissionLogWebToast.LogOnly,
                 });
                 continue;
             }
@@ -718,12 +1073,13 @@ public partial class MissionController : Node
                 _state.Ship.Systems[SystemId.Shields].Heat = Math.Clamp(
                     _state.Ship.Systems[SystemId.Shields].Heat + absorbed * 0.5f, 0, ShipSystem.MaxHeat);
 
-            _state.Mission.Log.Add(new MissionLogEntry
+            _state.AddMissionLogEntry(new MissionLogEntry
             {
                 Timestamp = _state.Mission.ElapsedTime,
                 Source = "System",
                 Message = $"Treffer von {contact.DisplayName}: {hullDamage:F0} Hüllenschaden" +
-                    (absorbed > 0 ? $" ({absorbed:F0} absorbiert)" : "")
+                    (absorbed > 0 ? $" ({absorbed:F0} absorbiert)" : ""),
+                WebToast = MissionLogWebToast.Toast,
             });
         }
     }
@@ -748,11 +1104,12 @@ public partial class MissionController : Node
         if (_state.Mission.UseStructuredMissionPhases)
             EmitSignal(SignalName.PhaseChanged, newPhase.ToString());
 
-        _state.Mission.Log.Add(new MissionLogEntry
+        _state.AddMissionLogEntry(new MissionLogEntry
         {
             Timestamp = _state.Mission.ElapsedTime,
             Source = "System",
-            Message = $"Phase: {newPhase}"
+            Message = $"Phase: {newPhase}",
+            WebToast = MissionLogWebToast.ToastProminent,
         });
 
         GD.Print($"[Mission] Phase → {newPhase}");
@@ -768,6 +1125,9 @@ public partial class MissionController : Node
 
     private void CheckEvents()
     {
+        if (_script?.UseOnlyScriptTriggers == true)
+            return;
+
         float t = _state.Mission.ElapsedTime;
 
         foreach (var (id, defaultTime) in EventSchedule)
@@ -798,8 +1158,12 @@ public partial class MissionController : Node
 
     private void TryTriggerScriptedEvent(string eventId)
     {
-        if (_script?.Events == null) return;
-        if (!_script.Events.TryGetValue(eventId, out var evt)) return;
+        ScriptedEvent? evt = null;
+        if (_script?.Events != null && _script.Events.TryGetValue(eventId, out var scriptEvt))
+            evt = scriptEvt;
+        else if (_runtimeEvents.TryGetValue(eventId, out var runtimeEvt))
+            evt = runtimeEvt;
+        if (evt == null) return;
 
         GD.Print($"[Mission] Scripted event: {eventId}");
 
@@ -821,15 +1185,18 @@ public partial class MissionController : Node
             Description = evt.Description,
             IsActive = true,
             TimeRemaining = evt.Duration,
+            ShowOnMainScreen = evt.ShowOnMainScreen,
         });
 
         if (!string.IsNullOrEmpty(evt.LogEntry))
         {
-            _state.Mission.Log.Add(new MissionLogEntry
+            bool funkspruchLine = evt.LogEntry.StartsWith("Funkspruch:", StringComparison.Ordinal);
+            _state.AddMissionLogEntry(new MissionLogEntry
             {
                 Timestamp = _state.Mission.ElapsedTime,
                 Source = "System",
                 Message = evt.LogEntry,
+                WebToast = funkspruchLine ? MissionLogWebToast.LogOnly : MissionLogWebToast.Toast,
             });
         }
 
@@ -855,11 +1222,12 @@ public partial class MissionController : Node
             TimeRemaining = 120f,
         });
 
-        _state.Mission.Log.Add(new MissionLogEntry
+        _state.AddMissionLogEntry(new MissionLogEntry
         {
             Timestamp = _state.Mission.ElapsedTime,
             Source = "System",
-            Message = "⚠ Sensorstörung erkannt - Scan-Effizienz reduziert"
+            Message = "⚠ Sensorstörung erkannt - Scan-Effizienz reduziert",
+            WebToast = MissionLogWebToast.Toast,
         });
 
         EmitSignal(SignalName.EventTriggered, "sensor_shimmer");
@@ -881,7 +1249,7 @@ public partial class MissionController : Node
             TimeRemaining = 90f,
         });
 
-        _state.Mission.PendingDecisions.Add(new MissionDecision
+        _state.AddPendingDecision(new MissionDecision
         {
             Id = "shield_response",
             Title = "Schild-Krise",
@@ -907,6 +1275,11 @@ public partial class MissionController : Node
         float vx = (_state.Ship.PositionX - ux) * 0.003f;
         float vy = (_state.Ship.PositionY - uy) * 0.003f;
 
+        int salvageRoll = HashCode.Combine(
+            "unknown_contact".GetHashCode(),
+            (int)(_state.Mission.ElapsedTime * 1000)) & 0x7FFFFFFF;
+        string salvageProfile = (salvageRoll % 2) == 0 ? "flight_data" : "spare_cargo";
+
         _state.Contacts.Add(new Contact
         {
             Id = "unknown_contact",
@@ -918,6 +1291,8 @@ public partial class MissionController : Node
             ScanProgress = 0,
             VelocityX = vx,
             VelocityY = vy,
+            PoiType = "argos_blackbox",
+            PoiRewardProfile = salvageProfile,
         });
 
         _state.ActiveEvents.Add(new GameEvent
@@ -927,9 +1302,10 @@ public partial class MissionController : Node
             Description = "Ein unidentifiziertes Objekt nähert sich. Scannen und bewerten empfohlen.",
             IsActive = true,
             TimeRemaining = 180f,
+            ShowOnMainScreen = false,
         });
 
-        _state.Mission.PendingDecisions.Add(new MissionDecision
+        _state.AddPendingDecision(new MissionDecision
         {
             Id = "contact_response",
             Title = "Unbekannter Kontakt nähert sich",
@@ -956,6 +1332,7 @@ public partial class MissionController : Node
             Description = "Das Zeitfenster für das Primärziel ist offen. Koordination erforderlich!",
             IsActive = true,
             TimeRemaining = 120f,
+            ShowOnMainScreen = false,
         });
 
         EmitSignal(SignalName.EventTriggered, "recovery_window");
@@ -965,53 +1342,70 @@ public partial class MissionController : Node
 
     private void CheckScriptTriggers()
     {
-        if (_script == null) return;
-
         CheckProximityTriggers();
         CheckTimeTriggers();
     }
 
     private void CheckProximityTriggers()
     {
-        if (_script == null) return;
-        for (int i = 0; i < _script.ProximityTriggers.Count; i++)
+        if (_script != null)
         {
-            if (_firedProximity.Contains(i)) continue;
-            var trigger = _script.ProximityTriggers[i];
-
-            var refPos = ResolveRef(trigger.Ref);
-            if (refPos == null) continue;
-
-            float dx = _state.Ship.PositionX - refPos.Value.X;
-            float dy = _state.Ship.PositionY - refPos.Value.Y;
-            float dz = _state.Ship.PositionZ - refPos.Value.Z;
-            float dist = MathF.Sqrt(dx * dx + dy * dy + dz * dz);
-
-            if (dist > trigger.Radius) continue;
-
-            if (trigger.Once)
-                _firedProximity.Add(i);
-
-            FireScriptTrigger(trigger.EventId, trigger.DecisionId, trigger.LogEntry);
+            for (int i = 0; i < _script.ProximityTriggers.Count; i++)
+            {
+                if (_firedProximity.Contains(i)) continue;
+                if (!EvaluateProximityTrigger(_script.ProximityTriggers[i])) continue;
+                if (_script.ProximityTriggers[i].Once) _firedProximity.Add(i);
+                FireScriptTrigger(_script.ProximityTriggers[i].EventId,
+                    _script.ProximityTriggers[i].DecisionId, _script.ProximityTriggers[i].LogEntry);
+            }
         }
+
+        for (int i = 0; i < _runtimeProximityTriggers.Count; i++)
+        {
+            if (_firedRuntimeProximity.Contains(i)) continue;
+            if (!EvaluateProximityTrigger(_runtimeProximityTriggers[i])) continue;
+            if (_runtimeProximityTriggers[i].Once) _firedRuntimeProximity.Add(i);
+            FireScriptTrigger(_runtimeProximityTriggers[i].EventId,
+                _runtimeProximityTriggers[i].DecisionId, _runtimeProximityTriggers[i].LogEntry);
+        }
+    }
+
+    private bool EvaluateProximityTrigger(ProximityTrigger trigger)
+    {
+        var refPos = ResolveRef(trigger.Ref);
+        if (refPos == null) return false;
+
+        float dx = _state.Ship.PositionX - refPos.Value.X;
+        float dy = _state.Ship.PositionY - refPos.Value.Y;
+        float dz = _state.Ship.PositionZ - refPos.Value.Z;
+        float dist = MathF.Sqrt(dx * dx + dy * dy + dz * dz);
+        return dist <= trigger.Radius;
     }
 
     private void CheckTimeTriggers()
     {
-        if (_script == null) return;
         float t = _state.Mission.ElapsedTime;
 
-        for (int i = 0; i < _script.TimeTriggers.Count; i++)
+        if (_script != null)
         {
-            if (_firedTimeTriggers.Contains(i)) continue;
-            var trigger = _script.TimeTriggers[i];
+            for (int i = 0; i < _script.TimeTriggers.Count; i++)
+            {
+                if (_firedTimeTriggers.Contains(i)) continue;
+                var trigger = _script.TimeTriggers[i];
+                if (t < trigger.Time) continue;
+                if (_triggeredEvents.Contains(trigger.EventId)) continue;
+                if (trigger.Once) _firedTimeTriggers.Add(i);
+                FireScriptTrigger(trigger.EventId, trigger.DecisionId, trigger.LogEntry);
+            }
+        }
+
+        for (int i = 0; i < _runtimeTimeTriggers.Count; i++)
+        {
+            if (_firedRuntimeTimeTriggers.Contains(i)) continue;
+            var trigger = _runtimeTimeTriggers[i];
             if (t < trigger.Time) continue;
-
             if (_triggeredEvents.Contains(trigger.EventId)) continue;
-
-            if (trigger.Once)
-                _firedTimeTriggers.Add(i);
-
+            if (trigger.Once) _firedRuntimeTimeTriggers.Add(i);
             FireScriptTrigger(trigger.EventId, trigger.DecisionId, trigger.LogEntry);
         }
     }
@@ -1031,25 +1425,70 @@ public partial class MissionController : Node
 
         if (logEntry != null)
         {
-            _state.Mission.Log.Add(new MissionLogEntry
+            _state.AddMissionLogEntry(new MissionLogEntry
             {
                 Timestamp = _state.Mission.ElapsedTime,
                 Source = "System",
                 Message = logEntry,
+                WebToast = MissionLogWebToast.Toast,
             });
         }
     }
 
     private int _deferredAgentCounter;
 
+    /// <summary>
+    /// Moves spawn along ship→spawn so passive sensors do not reveal the contact immediately (anticlimactic pop-in).
+    /// </summary>
+    private void PushDeferredSpawnOutsideSensorRange(ref float spawnX, ref float spawnY)
+    {
+        const float margin = 80f;
+        float shipX = _state.Ship.PositionX;
+        float shipY = _state.Ship.PositionY;
+        float sensorR = ShipCalculations.CalculateSensorRange(_state.Ship, _state.ContactsState.ActiveSensors);
+        float minDist = sensorR + margin;
+
+        float dx = spawnX - shipX;
+        float dy = spawnY - shipY;
+        float d = MathF.Sqrt(dx * dx + dy * dy);
+        if (d >= minDist) return;
+
+        if (d < 0.001f)
+        {
+            dx = 1f;
+            dy = 0f;
+            d = 1f;
+        }
+        else
+        {
+            float inv = 1f / d;
+            dx *= inv;
+            dy *= inv;
+        }
+
+        spawnX = shipX + dx * minDist;
+        spawnY = shipY + dy * minDist;
+        spawnX = Math.Clamp(spawnX, 5f, 995f);
+        spawnY = Math.Clamp(spawnY, 5f, 995f);
+    }
+
     private void SpawnDeferredAgents(string triggerId)
     {
-        if (_script?.DeferredAgentSpawns == null) return;
-
-        foreach (var spawn in _script.DeferredAgentSpawns)
+        var scriptSpawns = _script?.DeferredAgentSpawns;
+        if (scriptSpawns != null)
         {
-            if (spawn.TriggerId != triggerId) continue;
-            if (!AgentDefinition.TryGet(spawn.AgentType, out var def)) continue;
+            foreach (var spawn in scriptSpawns)
+                SpawnSingleDeferredAgent(spawn, triggerId);
+        }
+
+        foreach (var spawn in _runtimeDeferredSpawns)
+            SpawnSingleDeferredAgent(spawn, triggerId);
+    }
+
+    private void SpawnSingleDeferredAgent(DeferredAgentSpawn spawn, string triggerId)
+    {
+            if (spawn.TriggerId != triggerId) return;
+            if (!AgentDefinition.TryGet(spawn.AgentType, out var def)) return;
 
             float spawnX, spawnY, spawnZ = 500f;
             float anchorX, anchorY, anchorZ = 500f;
@@ -1097,6 +1536,8 @@ public partial class MissionController : Node
             spawnY = 500f + MathF.Sin(edgeAngle) * 480f;
             spawnX = Math.Clamp(spawnX, 5f, 995f);
             spawnY = Math.Clamp(spawnY, 5f, 995f);
+
+            PushDeferredSpawnOutsideSensorRange(ref spawnX, ref spawnY);
 
             float vDx = anchorX - spawnX;
             float vDy = anchorY - spawnY;
@@ -1146,10 +1587,14 @@ public partial class MissionController : Node
                 },
             };
 
+            AgentSpawnPersonality.Apply(contact.Agent!, contact.Id, contact.PositionX, contact.PositionY, def.BaseSpeed);
+
             _state.Contacts.Add(contact);
             GD.Print($"[Mission] Deferred agent spawned: {spawn.AgentType} at ({spawnX:F0},{spawnY:F0}) -> ({anchorX:F0},{anchorY:F0})");
-        }
     }
+
+    /// <summary>Public wrapper for <see cref="ResolveRef"/> used by orchestrators (e.g. runtime POI spawns).</summary>
+    public (float X, float Y, float Z)? ResolveRefMap(TriggerRef triggerRef) => ResolveRef(triggerRef);
 
     private (float X, float Y, float Z)? ResolveRef(TriggerRef triggerRef)
     {
@@ -1191,7 +1636,8 @@ public partial class MissionController : Node
                 return (_state.Mission.EncounterSpawnX, _state.Mission.EncounterSpawnY, 500f);
             case TriggerRef.Exit:
             {
-                var exit = _state.Contacts.Find(c => c.DisplayName == "Ausgang");
+                var exit = _state.Contacts.Find(c => c.Id == "sector_exit")
+                    ?? _state.Contacts.Find(c => c.DisplayName == "Ausgang");
                 if (exit == null) return null;
                 return (exit.PositionX, exit.PositionY, exit.PositionZ);
             }
@@ -1202,18 +1648,38 @@ public partial class MissionController : Node
 
     private void AddScriptedDecision(string decisionId)
     {
-        if (_script?.Decisions == null) return;
-        if (!_script.Decisions.TryGetValue(decisionId, out var sd)) return;
+        ScriptedDecision? sd = null;
+        if (_script?.Decisions != null && _script.Decisions.TryGetValue(decisionId, out var scriptSd))
+            sd = scriptSd;
+        else if (_runtimeDecisions.TryGetValue(decisionId, out var runtimeSd))
+            sd = runtimeSd;
+        if (sd == null) return;
+
         if (_state.Mission.PendingDecisions.Exists(d => d.Id == decisionId)) return;
         if (_state.Mission.CompletedDecisions.Contains(decisionId)) return;
 
-        _state.Mission.PendingDecisions.Add(new MissionDecision
+        _state.AddPendingDecision(new MissionDecision
         {
             Id = decisionId,
             Title = sd.Title,
             Description = sd.Description,
             Options = sd.Options,
         });
+    }
+
+    /// <summary>Captain command and automatic tick: complete mission when jump conditions match <see cref="SectorJumpCompletion"/>.</summary>
+    public bool TryCaptainLeaveSector()
+    {
+        if (!_state.MissionStarted || _state.Mission.Phase == MissionPhase.Ended) return false;
+        return TryCompleteMissionAtExit();
+    }
+
+    private bool TryCompleteMissionAtExit()
+    {
+        if (!SectorJumpCompletion.IsReady(_state)) return false;
+        _state.Mission.PrimaryObjective = ObjectiveStatus.Completed;
+        EndMission(MissionResult.Success);
+        return true;
     }
 
     private void CheckEndConditions(float delta)
@@ -1227,49 +1693,38 @@ public partial class MissionController : Node
         if (_state.Debug.Invulnerable && _state.Ship.HullIntegrity < 1)
             _state.Ship.HullIntegrity = 1;
 
-        // Check recovery window completion
-        var recoveryEvent = _state.ActiveEvents.Find(e => e.Id == "recovery_window");
-        if (recoveryEvent != null)
-        {
-            var primaryTarget = _state.Contacts.Find(c => c.Id == "primary_target");
-            if (primaryTarget != null)
-            {
-                float dx = _state.Ship.PositionX - primaryTarget.PositionX;
-                float dy = _state.Ship.PositionY - primaryTarget.PositionY;
-                float dz = _state.Ship.PositionZ - primaryTarget.PositionZ;
-                float dist = MathF.Sqrt(dx * dx + dy * dy + dz * dz);
+        // Jump-out / legacy recovery: shared rules in SectorJumpCompletion (Captain LeaveSector uses same check).
+        if (TryCompleteMissionAtExit())
+            return;
 
-                if (dist < 50f && primaryTarget.ScanProgress >= 100)
+        // Update active events timers
+        bool pauseTimers = _script?.PauseActiveEventTimers == true;
+        if (!pauseTimers)
+        {
+            for (int i = _state.ActiveEvents.Count - 1; i >= 0; i--)
+            {
+                var evt = _state.ActiveEvents[i];
+                if (evt.TimeRemaining > 0)
+                    evt.TimeRemaining -= delta;
+
+                if (evt.TimeRemaining <= 0 && evt.IsActive)
                 {
-                    _state.Mission.PrimaryObjective = ObjectiveStatus.Completed;
-                    EndMission(MissionResult.Success);
-                    return;
+                    evt.IsActive = false;
+                    evt.IsResolved = true;
                 }
             }
         }
 
-        // Update active events timers
-        for (int i = _state.ActiveEvents.Count - 1; i >= 0; i--)
-        {
-            var evt = _state.ActiveEvents[i];
-            // TimeRemaining is decremented here
-            if (evt.TimeRemaining > 0)
-                evt.TimeRemaining -= delta;
-
-            if (evt.TimeRemaining <= 0 && evt.IsActive)
-            {
-                evt.IsActive = false;
-                evt.IsResolved = true;
-            }
-        }
-
         // Bergungsfenster zu Ende ohne Primärziel — intrinsisch ans Event gekoppelt, kein globales Limit
-        var recoveryExpired = _state.ActiveEvents.Find(e => e.Id == "recovery_window");
-        if (recoveryExpired is { IsActive: false, IsResolved: true }
-            && _state.Mission.PrimaryObjective == ObjectiveStatus.InProgress)
+        if (_script == null || _script.FailMissionWhenRecoveryWindowExpires)
         {
-            _state.Mission.PrimaryObjective = ObjectiveStatus.Failed;
-            EndMission(MissionResult.Failed);
+            var recoveryExpired = _state.ActiveEvents.Find(e => e.Id == "recovery_window");
+            if (recoveryExpired is { IsActive: false, IsResolved: true }
+                && _state.Mission.PrimaryObjective == ObjectiveStatus.InProgress)
+            {
+                _state.Mission.PrimaryObjective = ObjectiveStatus.Failed;
+                EndMission(MissionResult.Failed);
+            }
         }
     }
 
@@ -1300,7 +1755,9 @@ public partial class MissionController : Node
 
         string displayResult = result switch
         {
-            MissionResult.Success => "Voller Erfolg! Primärziel gesichert.",
+            MissionResult.Success => _script?.PrimaryObjective?.HideExitUntilScanned == true
+                ? "Voller Erfolg! Sektorausgang erreicht."
+                : "Voller Erfolg! Primärziel gesichert.",
             MissionResult.Partial => "Teil-Erfolg. Primärziel teilweise erreicht.",
             MissionResult.Failed => "Fehlschlag. Primärziel nicht erreicht.",
             MissionResult.Timeout => "Zeitüberschreitung. Mission abgebrochen.",
@@ -1308,11 +1765,12 @@ public partial class MissionController : Node
             _ => "Mission beendet."
         };
 
-        _state.Mission.Log.Add(new MissionLogEntry
+        _state.AddMissionLogEntry(new MissionLogEntry
         {
             Timestamp = _state.Mission.ElapsedTime,
             Source = "System",
-            Message = $"Mission beendet: {displayResult}"
+            Message = $"Mission beendet: {displayResult}",
+            WebToast = MissionLogWebToast.ToastProminent,
         });
 
         EmitSignal(SignalName.MissionEnded, (int)result);
@@ -1324,6 +1782,72 @@ public partial class MissionController : Node
         if (_triggeredEvents.Contains(eventId)) return;
         _triggeredEvents.Add(eventId);
         TriggerEventById(eventId);
+    }
+
+    // ── Runtime injection API (used by NodeEventCatalog / DecisionEffectResolver) ─────────
+
+    /// <summary>Registers a runtime-only <see cref="ScriptedDecision"/> so <see cref="AddScriptedDecision"/> can resolve it.</summary>
+    public void RegisterRuntimeDecision(string id, ScriptedDecision decision)
+    {
+        if (string.IsNullOrEmpty(id) || decision == null) return;
+        _runtimeDecisions[id] = decision;
+    }
+
+    /// <summary>Registers a runtime-only <see cref="ScriptedEvent"/> so <see cref="TryTriggerScriptedEvent"/> can resolve it.</summary>
+    public void RegisterRuntimeEvent(string id, ScriptedEvent evt)
+    {
+        if (string.IsNullOrEmpty(id) || evt == null) return;
+        _runtimeEvents[id] = evt;
+    }
+
+    /// <summary>Appends a proximity trigger that will be evaluated alongside the active script.</summary>
+    public void AddRuntimeProximityTrigger(ProximityTrigger trigger)
+    {
+        if (trigger == null) return;
+        _runtimeProximityTriggers.Add(trigger);
+    }
+
+    /// <summary>Appends a time trigger that will be evaluated alongside the active script.</summary>
+    public void AddRuntimeTimeTrigger(TimeTrigger trigger)
+    {
+        if (trigger == null) return;
+        _runtimeTimeTriggers.Add(trigger);
+    }
+
+    /// <summary>Queues deferred spawn definitions that fire when their <see cref="DeferredAgentSpawn.TriggerId"/> is reached.</summary>
+    public void QueueDeferredSpawns(IEnumerable<DeferredAgentSpawn> spawns)
+    {
+        if (spawns == null) return;
+        foreach (var s in spawns)
+            if (s != null) _runtimeDeferredSpawns.Add(s);
+    }
+
+    /// <summary>
+    /// Queues spawns from a <see cref="NodeEventTrigger.PreSector"/> decision so they materialise
+    /// in the *next* sector instead of the current (about-to-be-discarded) one. The next
+    /// <see cref="StartMission"/> moves these into <see cref="_runtimeDeferredSpawns"/> and
+    /// auto-fires each unique <see cref="DeferredAgentSpawn.TriggerId"/> after the sector is
+    /// fully initialised. Generic across all events — no per-event wiring required.
+    /// </summary>
+    public void QueueSectorEntrySpawns(IEnumerable<DeferredAgentSpawn> spawns)
+    {
+        if (spawns == null) return;
+        foreach (var s in spawns)
+        {
+            if (s == null) continue;
+            _pendingSectorEntrySpawns.Add(s);
+            if (!string.IsNullOrEmpty(s.TriggerId))
+                _pendingSectorEntryTriggers.Add(s.TriggerId);
+        }
+    }
+
+    /// <summary>Immediately dispatches a synthetic trigger (e.g. from a NodeEvent pre-sector decision) firing queued spawns.</summary>
+    public void FireRuntimeTriggerNow(string triggerId, string? eventId = null, string? decisionId = null, string? logEntry = null)
+    {
+        if (!string.IsNullOrEmpty(eventId) || !string.IsNullOrEmpty(decisionId) || !string.IsNullOrEmpty(logEntry))
+            FireScriptTrigger(eventId ?? "", decisionId ?? "", logEntry ?? "");
+        else if (!string.IsNullOrEmpty(triggerId))
+            SpawnDeferredAgents(triggerId);
     }
 
     public void SetPhaseManually(MissionPhase phase)
@@ -1338,6 +1862,15 @@ public partial class MissionController : Node
         _triggeredEvents.Clear();
         _firedProximity.Clear();
         _firedTimeTriggers.Clear();
+        _firedRuntimeProximity.Clear();
+        _firedRuntimeTimeTriggers.Clear();
+        _runtimeProximityTriggers.Clear();
+        _runtimeTimeTriggers.Clear();
+        _runtimeDeferredSpawns.Clear();
+        _pendingSectorEntrySpawns.Clear();
+        _pendingSectorEntryTriggers.Clear();
+        _runtimeDecisions.Clear();
+        _runtimeEvents.Clear();
         _deferredAgentCounter = 0;
         _encounterConfig = null;
         _script = null;

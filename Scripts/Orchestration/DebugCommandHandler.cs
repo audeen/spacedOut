@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading;
 using Godot;
 using SpacedOut.Agents;
+using SpacedOut.Meta;
 using SpacedOut.Mission;
 using SpacedOut.Run;
 using SpacedOut.State;
@@ -16,6 +17,11 @@ public class DebugCommandHandler
 
     private readonly Dictionary<string, Action> _commands = new();
     private readonly GameState _state;
+    private readonly MissionOrchestrator _missionOrch;
+    private readonly MissionController _missionController;
+    private readonly RunOrchestrator _runOrch;
+    private readonly Action? _broadcastStateUpdates;
+    private readonly MetaProgressService? _metaProgress;
 
     public DebugCommandHandler(
         GameState state,
@@ -24,9 +30,17 @@ public class DebugCommandHandler
         RunOrchestrator runOrch,
         Action toggleFlyCamera,
         Action<string> onBiomeChanged,
-        Action? broadcastStateUpdates = null)
+        Action? refreshSkybox = null,
+        Action? broadcastStateUpdates = null,
+        Action? toggleShipScaleCompare = null,
+        MetaProgressService? metaProgress = null)
     {
         _state = state;
+        _missionOrch = missionOrch;
+        _missionController = missionController;
+        _runOrch = runOrch;
+        _broadcastStateUpdates = broadcastStateUpdates;
+        _metaProgress = metaProgress;
         var dbg = state.Debug;
         var ship = state.Ship;
         var gun = state.Gunner;
@@ -154,18 +168,35 @@ public class DebugCommandHandler
                 c.ScanProgress = 100;
                 c.IsVisibleOnMainScreen = true;
                 c.ReleasedToNav = true;
+                if (c.Id == "sector_exit")
+                {
+                    // Must match MissionController.ClampHiddenExitUntilRelayUnlock: without this flag,
+                    // scripted missions (HideExitUntilScanned) snap the exit back to Hidden every tick.
+                    state.Mission.JumpCoordinatesUnlocked = true;
+                    c.PreRevealed = true;
+                }
             }
+            _broadcastStateUpdates?.Invoke();
             GD.Print("[Debug] Alle Kontakte aufgedeckt & gescannt");
         };
         _commands["scan_all"] = () =>
         {
             foreach (var c in state.Contacts)
             {
-                if (c.Discovery == DiscoveryState.Hidden || c.IsDestroyed) continue;
+                if (c.IsDestroyed) continue;
+                // Hidden contacts are skipped unless this is the sector exit (often script-locked Hidden).
+                if (c.Discovery == DiscoveryState.Hidden && c.Id != "sector_exit") continue;
                 c.ScanProgress = 100;
                 c.Discovery = DiscoveryState.Scanned;
                 c.IsVisibleOnMainScreen = true;
+                if (c.Id == "sector_exit")
+                {
+                    state.Mission.JumpCoordinatesUnlocked = true;
+                    c.ReleasedToNav = true;
+                    c.PreRevealed = true;
+                }
             }
+            _broadcastStateUpdates?.Invoke();
             GD.Print("[Debug] Alle sichtbaren Kontakte gescannt");
         };
         _commands["reveal_all_resource_zones"] = () =>
@@ -240,7 +271,7 @@ public class DebugCommandHandler
             foreach (var c in state.Contacts.Where(c => c.Type == ContactType.Hostile && !c.IsDestroyed))
             {
                 c.HitPoints = 0;
-                c.IsDestroyed = true;
+                c.ApplyCombatDestruction();
                 count++;
             }
             GD.Print($"[Debug] {count} Feinde zerstört");
@@ -273,10 +304,39 @@ public class DebugCommandHandler
             var target = state.Contacts.Find(c => c.Id == state.Gunner.SelectedTargetId);
             if (target == null) return;
             target.HitPoints = 0;
-            target.IsDestroyed = true;
+            target.ApplyCombatDestruction();
             state.Gunner.SelectedTargetId = null;
             state.Gunner.TargetLockProgress = 0;
             GD.Print($"[Debug] Ziel zerstört: {target.DisplayName}");
+        };
+        _commands["fx_test_shot"] = () =>
+        {
+            string? targetId = state.Gunner.SelectedTargetId;
+            if (string.IsNullOrEmpty(targetId))
+            {
+                var hostile = state.Contacts.Find(c =>
+                    c.Type == ContactType.Hostile && !c.IsDestroyed);
+                targetId = hostile?.Id;
+            }
+            if (string.IsNullOrEmpty(targetId))
+            {
+                GD.Print("[Debug] fx_test_shot: kein Ziel (weder gelockt noch feindlich).");
+                return;
+            }
+
+            var visual = state.Gunner.Mode == WeaponMode.Precision
+                ? WeaponVisualKind.LaserBeam
+                : WeaponVisualKind.KineticTracer;
+
+            state.CombatFx.PendingShots.Add(new ShotEvent
+            {
+                ShooterId = "player",
+                TargetId = targetId,
+                Visual = visual,
+                Hit = true,
+                TimestampSec = state.Mission.ElapsedTime,
+            });
+            GD.Print($"[Debug] fx_test_shot -> {targetId} ({visual})");
         };
 
         // ── Events ──────────────────────────────────────────────────
@@ -301,29 +361,132 @@ public class DebugCommandHandler
         _commands["biome_asteroid"] = () => { missionOrch.RegenerateBiome("asteroid_field"); onBiomeChanged("asteroid_field"); };
         _commands["biome_wreck"] = () => { missionOrch.RegenerateBiome("wreck_zone"); onBiomeChanged("wreck_zone"); };
         _commands["biome_station"] = () => { missionOrch.RegenerateBiome("station_periphery"); onBiomeChanged("station_periphery"); };
+        _commands["skybox_toggle"] = () =>
+        {
+            GameFeatures.SkyboxEnabled = !GameFeatures.SkyboxEnabled;
+            refreshSkybox?.Invoke();
+            GD.Print($"[Debug] Skybox {(GameFeatures.SkyboxEnabled ? "AN" : "AUS")}");
+        };
+        _commands["ship_scale_compare"] = () =>
+        {
+            if (toggleShipScaleCompare == null)
+            {
+                GD.PrintErr("[Debug] Schiff-Vergleich: nicht angebunden.");
+                return;
+            }
+            toggleShipScaleCompare();
+        };
 
         // ── Run ─────────────────────────────────────────────────────
-        _commands["run_new"] = () => runOrch.StartRun();
-        _commands["run_seed42"] = () => runOrch.StartRun(42);
+        _commands["run_new"] = () => runOrch.StartRun(missionController: missionController);
+        _commands["run_seed42"] = () => runOrch.StartRun(42, missionController);
         _commands["run_add_resources"] = () =>
         {
             if (state.ActiveRunState == null) return;
-            foreach (var key in new[] { RunResourceIds.Hull, RunResourceIds.SpareParts, RunResourceIds.ScienceData, RunResourceIds.Ammo })
+            foreach (var key in new[] { RunResourceIds.SpareParts, RunResourceIds.ScienceData, RunResourceIds.Fuel, RunResourceIds.Credits })
             {
                 state.ActiveRunState.Resources.TryGetValue(key, out var v);
                 state.ActiveRunState.Resources[key] = v + 5;
             }
             GD.Print("[Debug] +5 auf alle Run-Ressourcen");
         };
+        // ── Dock (M5) ───────────────────────────────────────────────
+        _commands["dock_force_dock"] = () =>
+        {
+            if (state.Mission.Dock == null)
+            {
+                GD.Print("[Debug] Kein Dock in diesem Sektor (nur in Station-Sektoren).");
+                return;
+            }
+            state.Mission.Docked = true;
+            state.Mission.DockedContactId = "station_dock";
+            GD.Print("[Debug] Dock erzwungen.");
+        };
+        _commands["dock_repair"] = () =>
+        {
+            if (state.Mission.Dock == null || !state.Mission.Docked)
+            {
+                GD.Print("[Debug] Nicht angedockt.");
+                return;
+            }
+            if (state.ActiveRunState == null) return;
+            state.ActiveRunState.Resources.TryGetValue(RunResourceIds.SpareParts, out var have);
+            if (have < 1) { GD.Print("[Debug] Nicht genug Ersatzteile."); return; }
+            state.ActiveRunState.Resources[RunResourceIds.SpareParts] = have - 1;
+            ship.HullIntegrity = Math.Min(100f, ship.HullIntegrity + state.Mission.Dock.HullPerPart);
+            GD.Print($"[Debug] Reparatur: 1 Teil → Hülle {ship.HullIntegrity:F0}%");
+        };
+        _commands["dock_buy_fuel"] = () =>
+        {
+            if (state.Mission.Dock == null || !state.Mission.Docked)
+            {
+                GD.Print("[Debug] Nicht angedockt.");
+                return;
+            }
+            if (state.ActiveRunState == null) return;
+            int price = state.Mission.Dock.FuelPrice;
+            state.ActiveRunState.Resources.TryGetValue(RunResourceIds.Credits, out var cr);
+            if (cr < price) { GD.Print("[Debug] Nicht genug Credits."); return; }
+            state.ActiveRunState.Resources[RunResourceIds.Credits] = cr - price;
+            state.ActiveRunState.Resources.TryGetValue(RunResourceIds.Fuel, out var f);
+            state.ActiveRunState.Resources[RunResourceIds.Fuel] = f + 1;
+            GD.Print($"[Debug] Kauf: 1 Fuel für {price} Credits.");
+        };
+
         _commands["run_reveal_nodes"] = () =>
         {
             dbg.ShowAllRunNodes = !dbg.ShowAllRunNodes;
             if (dbg.ShowAllRunNodes && state.ActiveRunState != null)
             {
                 foreach (var rt in state.ActiveRunState.NodeStates.Values)
-                    rt.Knowledge = NodeKnowledgeState.Identified;
+                    rt.Knowledge = NodeKnowledgeState.Scanned;
             }
             GD.Print($"[Debug] Run-Knoten aufdecken: {dbg.ShowAllRunNodes}");
+            broadcastStateUpdates?.Invoke();
+            runOrch.BroadcastRunState();
+        };
+        // ── Meta (M7) ───────────────────────────────────────────────
+        _commands["meta_show"] = () =>
+        {
+            if (_metaProgress == null) { GD.Print("[Debug] MetaProgressService nicht verfügbar."); return; }
+            var p = _metaProgress.Profile;
+            GD.Print($"[Debug] Meta: Stardust={p.Stardust} Runs={p.RunsCompleted} SelectedPerk={p.SelectedPerkId ?? "(none)"} Unlocks=[{string.Join(", ", p.UnlockedIds)}]");
+        };
+        _commands["meta_unlock_all"] = () =>
+        {
+            if (_metaProgress == null) { GD.Print("[Debug] MetaProgressService nicht verfügbar."); return; }
+            foreach (var def in UnlockCatalog.All)
+                _metaProgress.Profile.UnlockedIds.Add(def.Id);
+            _metaProgress.Save();
+            GD.Print($"[Debug] Alle Unlocks gewährt ({UnlockCatalog.All.Count}). Sternenstaub unverändert.");
+            broadcastStateUpdates?.Invoke();
+        };
+        _commands["meta_reset"] = () =>
+        {
+            if (_metaProgress == null) { GD.Print("[Debug] MetaProgressService nicht verfügbar."); return; }
+            _metaProgress.ResetProfile();
+            broadcastStateUpdates?.Invoke();
+        };
+
+        _commands["run_scan_all"] = () =>
+        {
+            if (state.ActiveRunState == null)
+            {
+                GD.Print("[Debug] Kein aktiver Run.");
+                return;
+            }
+            int count = 0;
+            foreach (var rt in state.ActiveRunState.NodeStates.Values)
+            {
+                if (rt.Knowledge != NodeKnowledgeState.Scanned)
+                {
+                    rt.Knowledge = NodeKnowledgeState.Scanned;
+                    count++;
+                }
+            }
+            GD.Print($"[Debug] {count} Knoten auf Scanned gesetzt.");
+            broadcastStateUpdates?.Invoke();
+            runOrch.BroadcastRunState();
         };
     }
 
@@ -336,10 +499,135 @@ public class DebugCommandHandler
             return;
         }
 
+        const string spawnPoiPrefix = "spawn_poi:";
+        if (command.StartsWith(spawnPoiPrefix, StringComparison.Ordinal))
+        {
+            _missionOrch.DebugSpawnPoiMarker(command[spawnPoiPrefix.Length..]);
+            return;
+        }
+
+        const string eventTriggerPrefix = "event_trigger:";
+        if (command.StartsWith(eventTriggerPrefix, StringComparison.Ordinal))
+        {
+            DebugTriggerEvent(command[eventTriggerPrefix.Length..], forceNow: false);
+            return;
+        }
+
+        const string eventFireNowPrefix = "event_fire_now:";
+        if (command.StartsWith(eventFireNowPrefix, StringComparison.Ordinal))
+        {
+            DebugTriggerEvent(command[eventFireNowPrefix.Length..], forceNow: true);
+            return;
+        }
+
+        if (command == "event_list")
+        {
+            DebugListEvents();
+            return;
+        }
+
+        const string metaGrantPrefix = "meta_grant:";
+        if (command.StartsWith(metaGrantPrefix, StringComparison.Ordinal))
+        {
+            if (_metaProgress == null) { GD.Print("[Debug] MetaProgressService nicht verfügbar."); return; }
+            if (int.TryParse(command[metaGrantPrefix.Length..], out int amount))
+            {
+                _metaProgress.GrantStardust(amount);
+                GD.Print($"[Debug] +{amount} Sternenstaub (Gesamt {_metaProgress.Profile.Stardust})");
+                _broadcastStateUpdates?.Invoke();
+            }
+            else
+            {
+                GD.PrintErr($"[Debug] meta_grant:N — N war keine Zahl: '{command[metaGrantPrefix.Length..]}'");
+            }
+            return;
+        }
+
         if (_commands.TryGetValue(command, out var action))
             action();
         else
             GD.PrintErr($"[Debug] Unbekannter Befehl: {command}");
+    }
+
+    /// <summary>Lists all <see cref="NodeEventCatalog"/> entries with fire-status for the active run.</summary>
+    private void DebugListEvents()
+    {
+        var fired = _state.ActiveRunState?.FiredEventIds ?? new HashSet<string>();
+        GD.Print($"[Debug] NodeEventCatalog ({NodeEventCatalog.All.Count} Events):");
+        foreach (var evt in NodeEventCatalog.All)
+        {
+            string marker = fired.Contains(evt.Id) ? " [fired]" : "";
+            GD.Print($"  {evt.Id,-28} {evt.Trigger,-10} {evt.Title}{marker}");
+        }
+    }
+
+    /// <summary>
+    /// Forces a catalog event to fire. PreSector ⇒ stages a decision on the run map.
+    /// InSector ⇒ registers a synthetic event/decision and fires it immediately via
+    /// <see cref="MissionController.FireRuntimeTriggerNow"/>. <paramref name="forceNow"/> ignores the
+    /// one-shot guard in <see cref="RunStateData.FiredEventIds"/>.
+    /// </summary>
+    private void DebugTriggerEvent(string eventId, bool forceNow)
+    {
+        var evt = NodeEventCatalog.GetOrNull(eventId);
+        if (evt == null)
+        {
+            GD.PrintErr($"[Debug] Event {eventId} nicht im Katalog.");
+            return;
+        }
+
+        var run = _state.ActiveRunState;
+        if (run != null && !forceNow)
+            run.FiredEventIds.Add(eventId);
+
+        if (evt.Trigger == NodeEventTrigger.PreSector)
+        {
+            _state.Mission.PreSectorEventActive = true;
+            _state.Mission.PendingPreSectorEventId = evt.Id;
+            _state.Mission.PendingPreSectorEventTitle = evt.Title;
+            _state.Mission.PendingPreSectorNodeId = run?.CurrentNodeId ?? "";
+            _state.AddPendingDecision(new MissionDecision
+            {
+                Id = Commands.Handlers.CaptainNavCommandHandler.PreSectorDecisionId(evt.Id),
+                Title = evt.Title,
+                Description = evt.Description,
+                Options = evt.Options,
+            });
+            GD.Print($"[Debug] Pre-Sector Event forciert: {evt.Id}");
+            _broadcastStateUpdates?.Invoke();
+            return;
+        }
+
+        string decisionId = $"event:{evt.Id}";
+        string synthEventId = $"event_banner:{evt.Id}";
+
+        _missionController.RegisterRuntimeDecision(decisionId, new ScriptedDecision
+        {
+            Title = evt.Title,
+            Description = evt.Description,
+            Options = evt.Options,
+        });
+        _missionController.RegisterRuntimeEvent(synthEventId, new ScriptedEvent
+        {
+            Title = evt.Title,
+            Description = evt.Description,
+            Duration = 30f,
+            DecisionId = decisionId,
+            LogEntry = $"Funkspruch: {evt.Title}",
+        });
+
+        if (forceNow || !_state.MissionStarted)
+            _missionController.FireRuntimeTriggerNow(synthEventId, eventId: synthEventId, decisionId: decisionId);
+        else
+            _missionController.AddRuntimeTimeTrigger(new TimeTrigger
+            {
+                EventId = synthEventId,
+                Time = _state.Mission.ElapsedTime + 0.1f,
+                Once = true,
+            });
+
+        GD.Print($"[Debug] In-Sector Event forciert: {evt.Id}");
+        _broadcastStateUpdates?.Invoke();
     }
 
     private void SpawnDebugAgent(string agentTypeId)
@@ -409,9 +697,8 @@ public class DebugCommandHandler
             BaseSpeed = def.BaseSpeed,
             WeaponAccuracy = def.WeaponAccuracy,
             ShieldAbsorption = def.ShieldAbsorption,
-            OrbitAngle = px * 0.1f,
-            PhaseOffset = py * 0.07f,
         };
+        AgentSpawnPersonality.Apply(contact.Agent, contact.Id, contact.PositionX, contact.PositionY, def.BaseSpeed);
 
         state.Contacts.Add(contact);
         GD.Print($"[Debug] NPC-Agent gespawnt: {def.DisplayName} ({agentTypeId})");

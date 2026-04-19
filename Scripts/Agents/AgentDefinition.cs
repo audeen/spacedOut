@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using SpacedOut.State;
 
@@ -35,6 +36,31 @@ public class AgentDefinition
     public float FleeThreshold { get; init; } = 0.2f;
     public bool CanFlee { get; init; } = true;
 
+    // Visual
+    /// <summary>
+    /// Pool of PackedScene paths for this ship archetype. When non-empty,
+    /// <see cref="SpacedOut.LevelGen.Sector3DMarkers"/> picks one
+    /// deterministically per contact id and attaches it as the 3D ship mesh.
+    /// Empty pool => only the HUD blip is shown.
+    /// </summary>
+    public string[] ScenePaths { get; init; } = System.Array.Empty<string>();
+
+    /// <summary>Uniform scale applied to the loaded ship scene.</summary>
+    public float VisualScale { get; init; } = 1f;
+
+    /// <summary>
+    /// Extra Y rotation (radians) applied after aligning the mesh holder to velocity
+    /// (<see cref="SpacedOut.LevelGen.Sector3DMarkers"/>). Use π when the model’s
+    /// forward axis is +Z instead of Godot’s −Z.
+    /// </summary>
+    public float VisualYawOffsetRadians { get; init; } = 0f;
+
+    /// <summary>
+    /// Cosmetic weapon style shown when this agent fires on the player. Ignored for
+    /// non-combat agents. Consumed by <see cref="SpacedOut.Fx.CombatFxSystem"/>.
+    /// </summary>
+    public WeaponVisualKind WeaponVisual { get; init; } = WeaponVisualKind.KineticTracer;
+
     // ── Static registry ──────────────────────────────────────────────
 
     private static readonly Dictionary<string, AgentDefinition> Definitions = new()
@@ -59,6 +85,9 @@ public class AgentDefinition
             DisengageRadius = 400f,
             FleeThreshold = 0.2f,
             CanFlee = true,
+            ScenePaths = new[] { "res://Assets/models/ships/pirate_raider_01/pirate_raider_01.glb" },
+            VisualScale = 0.075f,
+            WeaponVisual = WeaponVisualKind.PlasmaBolt,
         },
 
         ["pirate_corsair"] = new AgentDefinition
@@ -81,6 +110,9 @@ public class AgentDefinition
             DisengageRadius = 350f,
             FleeThreshold = 0f,
             CanFlee = false,
+            ScenePaths = new[] { "res://Assets/models/ships/pirate_corsair_01/pirate_corsair_01.glb" },
+            VisualScale = 0.1f,
+            WeaponVisual = WeaponVisualKind.LaserBeam,
         },
 
         ["trader_ship"] = new AgentDefinition
@@ -97,6 +129,9 @@ public class AgentDefinition
             InitialMode = AgentBehaviorMode.Transit,
             DetectionRadius = 0f,
             CanFlee = false,
+            ScenePaths = new[] { "res://Assets/models/ships/trader_ship_01/trader_ship_01.glb" },
+            VisualScale = 0.05f,
+            VisualYawOffsetRadians = MathF.PI,
         },
 
         ["cargo_hauler"] = new AgentDefinition
@@ -113,6 +148,9 @@ public class AgentDefinition
             InitialMode = AgentBehaviorMode.Transit,
             DetectionRadius = 0f,
             CanFlee = false,
+            ScenePaths = new[] { "res://Assets/models/ships/cargo_hauler_01/cargo_hauler_01.glb" },
+            VisualScale = 2f,
+            VisualYawOffsetRadians = MathF.PI,
         },
     };
 

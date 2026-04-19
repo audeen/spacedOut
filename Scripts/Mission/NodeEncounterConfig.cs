@@ -31,6 +31,15 @@ public class NodeEncounterConfig
 
     public List<string> ForcedEvents { get; set; } = new();
 
+    /// <summary>Fuel charged when entering a run-map node of this type (see <see cref="FromRunNodeType"/>).</summary>
+    public static int GetFuelCostFor(RunNodeType type) => type switch
+    {
+        RunNodeType.Start => 0,
+        RunNodeType.Station => 0,
+        RunNodeType.End => 0,
+        _ => 1,
+    };
+
     /// <summary>Default encounter for debug missions (no campaign map node).</summary>
     public static NodeEncounterConfig DefaultForBiome(string biomeId) =>
         new()
@@ -51,8 +60,8 @@ public class NodeEncounterConfig
                 BiomeId = biomeId,
                 MissionTitle = "Sektorsprung",
                 BriefingText = "Sprungantrieb stabilisiert.",
-                FuelCost = 0,
-                LevelRadiusMultiplier = 0.5f,
+                FuelCost = GetFuelCostFor(RunNodeType.Start),
+                LevelRadiusMultiplier = 5f,
             },
             RunNodeType.Story => new NodeEncounterConfig
             {
@@ -61,7 +70,8 @@ public class NodeEncounterConfig
                 BriefingText = "Narrativer Abschnitt (Platzhalter).",
                 HasScanObjective = true,
                 ExtraMarkerCount = 2 + difficulty,
-                FuelCost = 1,
+                FuelCost = GetFuelCostFor(RunNodeType.Story),
+                LevelRadiusMultiplier = 5f,
             },
             RunNodeType.Side or RunNodeType.Anomaly => new NodeEncounterConfig
             {
@@ -69,7 +79,8 @@ public class NodeEncounterConfig
                 MissionTitle = "Nebenauftrag",
                 BriefingText = "Generischer Auftrag (Platzhalter).",
                 ExtraMarkerCount = 2,
-                FuelCost = 1,
+                FuelCost = GetFuelCostFor(RunNodeType.Side),
+                LevelRadiusMultiplier = 5f,
             },
             RunNodeType.Station => new NodeEncounterConfig
             {
@@ -78,7 +89,7 @@ public class NodeEncounterConfig
                 BriefingText = "Stationsumgebung (Platzhalter).",
                 IsStation = true,
                 DamageMultiplier = 0f,
-                FuelCost = 0,
+                FuelCost = GetFuelCostFor(RunNodeType.Station),
                 LevelRadiusMultiplier = 0.6f,
             },
             RunNodeType.Hostile => new NodeEncounterConfig
@@ -89,14 +100,16 @@ public class NodeEncounterConfig
                 HasHostileEncounter = true,
                 DamageMultiplier = 1.0f + difficulty * 0.15f,
                 ForcedEvents = { "unknown_approach" },
-                FuelCost = 1,
+                FuelCost = GetFuelCostFor(RunNodeType.Hostile),
+                LevelRadiusMultiplier = 5f,
             },
             RunNodeType.End => new NodeEncounterConfig
             {
                 BiomeId = biomeId,
                 MissionTitle = "Abschluss",
                 BriefingText = "Sektorabschluss (Platzhalter).",
-                FuelCost = 0,
+                FuelCost = GetFuelCostFor(RunNodeType.End),
+                LevelRadiusMultiplier = 5f,
             },
             _ => DefaultForBiome(biomeId),
         };

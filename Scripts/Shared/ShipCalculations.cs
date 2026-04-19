@@ -5,34 +5,176 @@ namespace SpacedOut.Shared;
 
 public static class ShipCalculations
 {
-    /// <summary>Instantaneous map-space velocity (XY) toward the active waypoint; matches UpdateShipMovement.</summary>
-    public static (float Vx, float Vy) GetShipVelocityXY(ShipState ship, RouteState route)
+    /// <summary>Instantaneous map-space velocity (XY); matches UpdateShipMovement (target tracking or waypoint).</summary>
+    public static (float Vx, float Vy) GetShipVelocityXY(GameState state)
     {
+        var ship = state.Ship;
         if (ship.FlightMode == FlightMode.Hold)
             return (0f, 0f);
 
-        Waypoint? target = null;
-        foreach (var w in route.Waypoints)
+        var tt = state.Navigation.TargetTracking;
+        var contact = FindValidTrackingContact(state, tt);
+        if (tt.Mode != TargetTrackingMode.None && contact != null)
+        {
+            if (TryGetTrackingSteerTarget(tt, ship, contact, out var tx, out var ty, out var tz, out var shouldMove)
+                && shouldMove)
+            {
+                float dx = tx - ship.PositionX;
+                float dy = ty - ship.PositionY;
+                float dz = tz - ship.PositionZ;
+                float dist = MathF.Sqrt(dx * dx + dy * dy + dz * dz);
+                if (dist < 0.001f)
+                    return (0f, 0f);
+                float speed = CalculateShipSpeed(ship);
+                return (dx / dist * speed, dy / dist * speed);
+            }
+
+            return (0f, 0f);
+        }
+
+        Waypoint? wp = null;
+        foreach (var w in state.Route.Waypoints)
         {
             if (!w.IsReached)
             {
-                target = w;
+                wp = w;
                 break;
             }
         }
 
-        if (target == null)
+        if (wp == null)
             return (0f, 0f);
 
-        float dx = target.X - ship.PositionX;
-        float dy = target.Y - ship.PositionY;
-        float dz = target.Z - ship.PositionZ;
+        float wdx = wp.X - ship.PositionX;
+        float wdy = wp.Y - ship.PositionY;
+        float wdz = wp.Z - ship.PositionZ;
+        float wdist = MathF.Sqrt(wdx * wdx + wdy * wdy + wdz * wdz);
+        if (wdist < 0.001f)
+            return (0f, 0f);
+
+        float spd = CalculateShipSpeed(ship);
+        return (wdx / wdist * spd, wdy / wdist * spd);
+    }
+
+    public static Contact? FindValidTrackingContact(GameState state, TargetTrackingState tt)
+    {
+        if (tt.Mode == TargetTrackingMode.None || string.IsNullOrEmpty(tt.TrackedContactId))
+            return null;
+        var c = state.Contacts.Find(x => x.Id == tt.TrackedContactId);
+        if (c == null || c.IsDestroyed || c.Discovery != DiscoveryState.Scanned
+            || !state.IsContactAvailableToCaptainNav(c))
+            return null;
+        return c;
+    }
+
+    public static void AdvanceOrbitAngle(TargetTrackingState tt, ShipState ship, float delta)
+    {
+        if (tt.Mode != TargetTrackingMode.Orbit)
+            return;
+        float speed = CalculateShipSpeed(ship);
+        float r = Math.Max(Math.Clamp(tt.Range, TargetTrackingState.MinRange, TargetTrackingState.MaxRange), 10f);
+        float angular = speed / r;
+        if (!tt.OrbitClockwise)
+            angular = -angular;
+        tt.OrbitAngle += angular * delta;
+    }
+
+    /// <summary>Steer target for the current tracking mode. Orbit uses <see cref="TargetTrackingState.OrbitAngle"/> (advance separately).</summary>
+    public static bool TryGetTrackingSteerTarget(
+        TargetTrackingState tt,
+        ShipState ship,
+        Contact contact,
+        out float tx,
+        out float ty,
+        out float tz,
+        out bool shouldMove)
+    {
+        tx = ty = tz = 0f;
+        shouldMove = true;
+        float cx = contact.PositionX;
+        float cy = contact.PositionY;
+        float cz = contact.PositionZ;
+        float r = Math.Clamp(tt.Range, TargetTrackingState.MinRange, TargetTrackingState.MaxRange);
+
+        switch (tt.Mode)
+        {
+            case TargetTrackingMode.Follow:
+                tx = cx;
+                ty = cy;
+                tz = cz;
+                float fdx = tx - ship.PositionX;
+                float fdy = ty - ship.PositionY;
+                float fdz = tz - ship.PositionZ;
+                float fdist = MathF.Sqrt(fdx * fdx + fdy * fdy + fdz * fdz);
+                shouldMove = fdist > 0.5f;
+                return true;
+
+            case TargetTrackingMode.Orbit:
+                tx = cx + MathF.Cos(tt.OrbitAngle) * r;
+                ty = cy + MathF.Sin(tt.OrbitAngle) * r;
+                tz = cz;
+                float odx = tx - ship.PositionX;
+                float ody = ty - ship.PositionY;
+                float odz = tz - ship.PositionZ;
+                float odist = MathF.Sqrt(odx * odx + ody * ody + odz * odz);
+                shouldMove = odist > 0.5f;
+                return true;
+
+            case TargetTrackingMode.KeepAtRange:
+                float sdx = ship.PositionX - cx;
+                float sdy = ship.PositionY - cy;
+                float sdz = ship.PositionZ - cz;
+                float sdist = MathF.Sqrt(sdx * sdx + sdy * sdy + sdz * sdz);
+                float db = TargetTrackingState.KeepAtRangeDeadband;
+                if (sdist < 0.001f)
+                {
+                    shouldMove = false;
+                    return true;
+                }
+
+                if (sdist > r + db)
+                {
+                    tx = cx;
+                    ty = cy;
+                    tz = cz;
+                    return true;
+                }
+
+                if (sdist < r - db)
+                {
+                    float inv = 1f / sdist;
+                    tx = ship.PositionX + sdx * inv * 1000f;
+                    ty = ship.PositionY + sdy * inv * 1000f;
+                    tz = ship.PositionZ + sdz * inv * 1000f;
+                    return true;
+                }
+
+                shouldMove = false;
+                return true;
+
+            default:
+                return false;
+        }
+    }
+
+    public static void StepShipToward(ShipState ship, float tx, float ty, float tz, float delta)
+    {
+        float dx = tx - ship.PositionX;
+        float dy = ty - ship.PositionY;
+        float dz = tz - ship.PositionZ;
         float dist = MathF.Sqrt(dx * dx + dy * dy + dz * dz);
         if (dist < 0.001f)
-            return (0f, 0f);
-
+            return;
         float speed = CalculateShipSpeed(ship);
-        return (dx / dist * speed, dy / dist * speed);
+        float moveX = dx / dist * speed * delta;
+        float moveY = dy / dist * speed * delta;
+        float moveZ = dz / dist * speed * delta;
+        if (MathF.Abs(moveX) > MathF.Abs(dx)) moveX = dx;
+        if (MathF.Abs(moveY) > MathF.Abs(dy)) moveY = dy;
+        if (MathF.Abs(moveZ) > MathF.Abs(dz)) moveZ = dz;
+        ship.PositionX += moveX;
+        ship.PositionY += moveY;
+        ship.PositionZ += moveZ;
     }
 
     public static float GetStatusMultiplier(SystemStatus status) => status switch
@@ -71,6 +213,19 @@ public static class ShipCalculations
         float heatMult = ship.Systems[SystemId.Sensors].GetHeatEfficiencyMultiplier();
         float activeMult = activeSensors ? 1.5f : 1f;
         return baseRange * energyMultiplier * statusMultiplier * heatMult * activeMult;
+    }
+
+    /// <summary>
+    /// Sensor range as if sensors were Operational (no <see cref="GetStatusMultiplier"/> for Sensors).
+    /// Used for tactical UI to show the lost annulus under interference vs. effective range.
+    /// </summary>
+    public static float CalculateSensorRangeIgnoringSystemStatus(ShipState ship, bool activeSensors = false)
+    {
+        const float baseRange = 500f;
+        float energyMultiplier = ship.Energy.Sensors / 25f;
+        float heatMult = ship.Systems[SystemId.Sensors].GetHeatEfficiencyMultiplier();
+        float activeMult = activeSensors ? 1.5f : 1f;
+        return baseRange * energyMultiplier * heatMult * activeMult;
     }
 
     public static float CalculateShipSpeed(ShipState ship)

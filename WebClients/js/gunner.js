@@ -21,6 +21,8 @@ let isAutofire = false;
 let lastGunnerShotFeedbackSeq = 0;
 let gunnerShotFeedbackSynced = false;
 
+let _lastDrillInfoKey = '';
+
 client.on('welcome', () => {
     client.selectRole('Gunner');
 });
@@ -37,6 +39,7 @@ client.onState((msg) => {
     const d = msg.data;
 
     updatePhaseHeaderFromState(msg);
+    updateEventIndicator(d);
     document.getElementById('timer-display').textContent = formatTime(msg.elapsed_time || 0);
 
     gunnerContacts = d.contacts || [];
@@ -174,7 +177,30 @@ client.onState((msg) => {
     if (fireControls) fireControls.style.display = toolMode === 'Mining' ? 'none' : '';
     const autoBtnMining = document.getElementById('autofire-btn');
     if (autoBtnMining) autoBtnMining.style.display = toolMode === 'Mining' ? 'none' : '';
+
+    updateDockStatusPanel(d);
 });
+
+function updateDockStatusPanel(d) {
+    const panel = document.getElementById('dock-status-panel');
+    const text = document.getElementById('dock-status-text');
+    if (!panel || !text) return;
+
+    const dock = d.dock;
+    if (!dock || dock.Available === false) {
+        panel.style.display = 'none';
+        return;
+    }
+
+    panel.style.display = 'block';
+    if (d.mission_docked) {
+        text.textContent = 'Angedockt: Waffen gesichert — keine Feuerfreigabe.';
+        text.className = 'text-yellow';
+    } else {
+        text.textContent = 'Station-Sektor — Dock in Reichweite.';
+        text.className = 'text-cyan';
+    }
+}
 
 function updateTargetInfo(lockProgress, fireCooldown, weaponStatus) {
     const infoEl = document.getElementById('target-info');
@@ -315,10 +341,27 @@ function setToolMode(mode) {
     client.showToast(mode === 'Mining' ? 'Werkzeugmodus: MINING' : 'Werkzeugmodus: COMBAT', 'info');
 }
 
-function drillSelected() {
-    if (!selectedGunnerTarget) return;
-    client.sendCommand('DrillTarget', { contact_id: selectedGunnerTarget });
+/** Sends DrillTarget with the clicked contact id (server does not require prior selected_target sync). */
+function startDrillForContact(contactId) {
+    if (!contactId) return;
+    selectTarget(contactId);
+    client.sendCommand('DrillTarget', { contact_id: contactId });
     client.showToast('Bohrung gestartet', 'info');
+}
+
+function drillSelected(contactId) {
+    const id = contactId || selectedGunnerTarget;
+    if (!id) return;
+    client.sendCommand('DrillTarget', { contact_id: id });
+    client.showToast('Bohrung gestartet', 'info');
+}
+
+function escapeHtml(s) {
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
 }
 
 function updateDrillInfo() {
@@ -327,27 +370,55 @@ function updateDrillInfo() {
 
     if (drillTarget) {
         const contact = gunnerContacts.find(c => c.Id === drillTarget);
-        if (contact) {
-            const progress = contact.PoiProgress || 0;
-            drillInfo.innerHTML = `
-                <div style="font-size:14px; font-weight:600; color:var(--yellow);">Bohrziel: ${contact.DisplayName}</div>
-                <div class="progress-bar progress-yellow" style="height:6px; margin-top:4px;">
-                    <div class="progress-fill" style="width:${Math.round(progress)}%"></div>
-                </div>
-                <div class="text-dim mt-4" style="font-size:12px;">${Math.round(progress)}%</div>
-            `;
-        } else {
-            drillInfo.innerHTML = '<div class="text-dim">Bohrziel verloren</div>';
+        if (!contact) {
+            const key = 'lost';
+            if (_lastDrillInfoKey !== key) {
+                _lastDrillInfoKey = key;
+                drillInfo.innerHTML = '<div class="text-dim">Bohrziel verloren</div>';
+            }
+            return;
         }
-    } else {
-        const poiTargets = gunnerContacts.filter(c => c.PoiType && c.PoiPhase === 'Analyzed');
-        if (poiTargets.length > 0) {
+
+        const title = escapeHtml(contact.DisplayName || contact.Id);
+        const structureNeeded = _lastDrillInfoKey !== `drilling:${drillTarget}`
+            || !drillInfo.querySelector('.drill-progress-fill');
+
+        if (structureNeeded) {
+            _lastDrillInfoKey = `drilling:${drillTarget}`;
+            const pr = Math.round(contact.PoiProgress || 0);
+            drillInfo.innerHTML = `
+                <div style="font-size:14px; font-weight:600; color:var(--yellow);">Bohrziel: ${title}</div>
+                <div class="progress-bar progress-yellow" style="height:6px; margin-top:4px;">
+                    <div class="progress-fill drill-progress-fill" style="width:${pr}%"></div>
+                </div>
+                <div class="text-dim mt-4 drill-progress-label" style="font-size:12px;">${pr}%</div>
+            `;
+            return;
+        }
+
+        const pr = Math.round(contact.PoiProgress || 0);
+        const fill = drillInfo.querySelector('.drill-progress-fill');
+        const label = drillInfo.querySelector('.drill-progress-label');
+        if (fill) fill.style.width = `${pr}%`;
+        if (label) label.textContent = `${pr}%`;
+        return;
+    }
+
+    const poiTargets = gunnerContacts.filter(c => c.PoiType && c.PoiPhase === 'Analyzed');
+    if (poiTargets.length > 0) {
+        const key = `pick:${poiTargets.map(c => c.Id).sort().join(',')}`;
+        if (key !== _lastDrillInfoKey) {
+            _lastDrillInfoKey = key;
             drillInfo.innerHTML = poiTargets.map(c =>
-                `<button class="btn btn-warning btn-block btn-sm" onclick="selectTarget('${c.Id}'); drillSelected();">
-                    Bohren: ${c.DisplayName}
+                `<button type="button" class="btn btn-warning btn-block btn-sm" onclick='startDrillForContact(${JSON.stringify(c.Id)})'>
+                    Bohren: ${escapeHtml(c.DisplayName || c.Id)}
                 </button>`
             ).join('');
-        } else {
+        }
+    } else {
+        const key = 'empty';
+        if (key !== _lastDrillInfoKey) {
+            _lastDrillInfoKey = key;
             drillInfo.innerHTML = '<div class="text-dim" style="text-align:center;">Kein POI bereit für Bohrung</div>';
         }
     }

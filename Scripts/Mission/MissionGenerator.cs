@@ -86,86 +86,85 @@ public static class MissionGenerator
         foreach (var entity in sector.Entities)
         {
             if (entity.MapPresence != MapPresence.Point) continue;
-
-            var p = CoordinateMapper.WorldToMap3D(entity.WorldPosition, sector.LevelRadius);
-            var contact = new Contact
-            {
-                Id = entity.Id,
-                AssetId = entity.AssetId,
-                Type = entity.ContactType,
-                DisplayName = entity.DisplayName,
-                PositionX = p.X,
-                PositionY = p.Y,
-                PositionZ = p.Z,
-                ThreatLevel = entity.ThreatLevel,
-                ScanProgress = entity.ScanProgress,
-                Discovery = entity.Discovery,
-                PreRevealed = entity.PreRevealed,
-                RadarShowDetectedInFullRange = entity.RadarShowDetectedInFullRange || entity.IsMovable,
-                VelocityX = entity.Velocity.X,
-                VelocityY = entity.Velocity.Z,
-                VelocityZ = entity.Velocity.Y,
-            };
-
-            if (entity.PreRevealed)
-            {
-                contact.ReleasedToNav = true;
-                contact.IsVisibleOnMainScreen = true;
-            }
-
-            if (!string.IsNullOrEmpty(entity.PoiType))
-            {
-                contact.PoiType = entity.PoiType;
-                contact.PoiRewardProfile = entity.PoiRewardProfile;
-                if (entity.PoiHasTrap)
-                    contact.PoiRewardProfile = entity.PoiRewardProfile;
-            }
-
-            if (entity.IsLandmark)
-            {
-                contact.Id = "primary_target";
-                contact.DisplayName = sector.BiomeId switch
-                {
-                    "asteroid_field" => "Massiver Asteroiden-Komplex",
-                    "wreck_zone" => "Schwaches Notsignal",
-                    "station_periphery" => "Stationssignal",
-                    _ => entity.DisplayName,
-                };
-            }
-
-            if (!string.IsNullOrEmpty(entity.AgentTypeId) &&
-                AgentDefinition.TryGet(entity.AgentTypeId, out var agentDef))
-            {
-                contact.HitPoints = agentDef.HitPoints;
-                contact.MaxHitPoints = agentDef.HitPoints;
-                contact.AttackDamage = agentDef.AttackDamage;
-                contact.AttackInterval = agentDef.AttackInterval;
-                contact.AttackRange = agentDef.AttackRange;
-
-                var anchorMap = CoordinateMapper.WorldToMap3D(entity.AnchorPosition, sector.LevelRadius);
-                var destMap = CoordinateMapper.WorldToMap3D(entity.DestinationPosition, sector.LevelRadius);
-
-                contact.Agent = new AgentState
-                {
-                    AgentType = entity.AgentTypeId,
-                    Mode = entity.InitialBehaviorMode,
-                    AnchorX = anchorMap.X,
-                    AnchorY = anchorMap.Y,
-                    AnchorZ = anchorMap.Z,
-                    DestinationX = destMap.X,
-                    DestinationY = destMap.Y,
-                    DetectionRadius = agentDef.DetectionRadius,
-                    FleeThreshold = agentDef.FleeThreshold,
-                    BaseSpeed = agentDef.BaseSpeed,
-                    WeaponAccuracy = agentDef.WeaponAccuracy,
-                    ShieldAbsorption = agentDef.ShieldAbsorption,
-                    OrbitAngle = contact.PositionX * 0.1f,
-                    PhaseOffset = contact.PositionY * 0.07f,
-                };
-            }
-
-            state.Contacts.Add(contact);
+            state.Contacts.Add(CreateContactFromEntity(entity, sector));
         }
+    }
+
+    /// <summary>Maps one sector entity to a runtime <see cref="Contact"/> (same rules as full mission populate).</summary>
+    public static Contact CreateContactFromEntity(SectorEntity entity, SectorData sector)
+    {
+        var p = CoordinateMapper.WorldToMap3D(entity.WorldPosition, sector.LevelRadius);
+        var contact = new Contact
+        {
+            Id = entity.Id,
+            AssetId = entity.AssetId,
+            Type = entity.ContactType,
+            DisplayName = entity.DisplayName,
+            PositionX = p.X,
+            PositionY = p.Y,
+            PositionZ = p.Z,
+            ThreatLevel = entity.ThreatLevel,
+            ScanProgress = entity.ScanProgress,
+            Discovery = entity.Discovery,
+            PreRevealed = entity.PreRevealed,
+            RadarShowDetectedInFullRange = entity.RadarShowDetectedInFullRange || entity.IsMovable,
+            PersistDetectedBeyondSensorRange = entity.PersistDetectedBeyondSensorRange,
+            VelocityX = entity.Velocity.X,
+            VelocityY = entity.Velocity.Z,
+            VelocityZ = entity.Velocity.Y,
+        };
+
+        if (entity.PreRevealed)
+        {
+            contact.ReleasedToNav = true;
+            contact.IsVisibleOnMainScreen = true;
+        }
+
+        if (!string.IsNullOrEmpty(entity.PoiType))
+        {
+            contact.PoiType = entity.PoiType;
+            contact.PoiRewardProfile = entity.PoiRewardProfile;
+            if (entity.PoiHasTrap)
+                contact.PoiRewardProfile = entity.PoiRewardProfile;
+        }
+
+        if (entity.IsPrimaryObjective)
+        {
+            contact.Id = "primary_target";
+        }
+
+        if (!string.IsNullOrEmpty(entity.AgentTypeId) &&
+            AgentDefinition.TryGet(entity.AgentTypeId, out var agentDef))
+        {
+            contact.HitPoints = agentDef.HitPoints;
+            contact.MaxHitPoints = agentDef.HitPoints;
+            contact.AttackDamage = agentDef.AttackDamage;
+            contact.AttackInterval = agentDef.AttackInterval;
+            contact.AttackRange = agentDef.AttackRange;
+
+            var anchorMap = CoordinateMapper.WorldToMap3D(entity.AnchorPosition, sector.LevelRadius);
+            var destMap = CoordinateMapper.WorldToMap3D(entity.DestinationPosition, sector.LevelRadius);
+
+            contact.Agent = new AgentState
+            {
+                AgentType = entity.AgentTypeId,
+                Mode = entity.InitialBehaviorMode,
+                AnchorX = anchorMap.X,
+                AnchorY = anchorMap.Y,
+                AnchorZ = anchorMap.Z,
+                DestinationX = destMap.X,
+                DestinationY = destMap.Y,
+                DetectionRadius = agentDef.DetectionRadius,
+                FleeThreshold = agentDef.FleeThreshold,
+                BaseSpeed = agentDef.BaseSpeed,
+                WeaponAccuracy = agentDef.WeaponAccuracy,
+                ShieldAbsorption = agentDef.ShieldAbsorption,
+            };
+            AgentSpawnPersonality.Apply(contact.Agent, contact.Id, contact.PositionX, contact.PositionY,
+                agentDef.BaseSpeed);
+        }
+
+        return contact;
     }
 
     // ── Resource zones in map-space for web clients ─────────────────

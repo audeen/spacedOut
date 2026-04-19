@@ -11,6 +11,10 @@ public static class CoordinateMapper
 {
     private const float MapCenter = 500f;
 
+    /// <summary>World position of the sector / map origin (map center 500,500,500).</summary>
+    public static Vector3 SectorOriginWorld(float levelRadius) =>
+        MapToWorld(MapCenter, MapCenter, MapCenter, levelRadius);
+
     /// <summary>Full 3D mapping: map (X,Y,Z) → world (X,Y,Z) where map-Z becomes world-Y (altitude).</summary>
     public static Vector3 MapToWorld(float mapX, float mapY, float mapZ, float levelRadius)
     {

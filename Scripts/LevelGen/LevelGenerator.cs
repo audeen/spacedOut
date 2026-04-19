@@ -4,12 +4,14 @@ using System.Linq;
 using Godot;
 using SpacedOut.Player;
 using SpacedOut.Sector;
+using SpacedOut.Sky;
 
 namespace SpacedOut.LevelGen;
 
 public partial class LevelGenerator : Node3D
 {
     private Node3D _levelContainer = null!;
+    private InstancedAsteroidPool _asteroidPool = null!;
     private readonly List<SpawnedObject> _spawnedObjects = new();
     private bool _standaloneMode;
 
@@ -33,6 +35,8 @@ public partial class LevelGenerator : Node3D
     public override void _Ready()
     {
         _levelContainer = GetNode<Node3D>("GeneratedLevel");
+        _asteroidPool = new InstancedAsteroidPool { Name = "InstancedAsteroids" };
+        _levelContainer.AddChild(_asteroidPool);
         _standaloneMode = GetNodeOrNull("DebugUI") != null;
 
         GetNodeOrNull<LevelGenDebugOverlay>("DebugUI/DebugOverlay")
@@ -86,13 +90,19 @@ public partial class LevelGenerator : Node3D
 
     /// <summary>
     /// Generate sector data and build the 3D scene from it.
+    /// Standalone <see cref="LevelGenScene"/> uses <paramref name="radiusMultiplier"/> when set;
+    /// otherwise defaults match gameplay (5× field/wreck, 0.6× station).
     /// </summary>
-    public void GenerateLevel(int seed, string? biomeOverride = null)
+    public void GenerateLevel(int seed, string? biomeOverride = null, float? radiusMultiplier = null)
     {
         string biomeId = biomeOverride ?? PickRandomBiome(seed);
-        var data = _sectorGenerator.Generate(seed, biomeId);
+        float mult = radiusMultiplier ?? GetStandaloneDefaultRadiusMultiplier(biomeId);
+        var data = _sectorGenerator.Generate(seed, biomeId, radiusMultiplier: mult);
         BuildFromSectorData(data);
     }
+
+    private static float GetStandaloneDefaultRadiusMultiplier(string biomeId) =>
+        biomeId == "station_periphery" ? 0.6f : 5f;
 
     /// <summary>
     /// Build the 3D scene from pre-generated SectorData.
@@ -105,38 +115,153 @@ public partial class LevelGenerator : Node3D
 
         GD.Print($"[LevelGen] Seed={data.Seed}  Biome={BiomeDefinition.Get(data.BiomeId).DisplayName}");
 
+        int instanced = 0;
         foreach (var entity in data.Entities)
         {
             if (entity.IsMovable) continue;
-            SpawnEntityAs3D(entity);
+            if (SpawnEntityAs3D(entity)) instanced++;
         }
 
+        _asteroidPool.Commit();
+
+        ApplySkybox(data);
         PlaceSpawnVisual(data.SpawnPoint);
         Validate();
 
         TeleportCamera();
         GetNodeOrNull<LevelGenDebugOverlay>("DebugUI/DebugOverlay")?.UpdateStats();
 
-        GD.Print($"[LevelGen] Fertig – {_spawnedObjects.Count} Objekte. Valide={IsValid}");
+        GD.Print($"[LevelGen] Fertig – {_spawnedObjects.Count} Objekte " +
+                 $"({instanced} instanced). Valide={IsValid}");
+    }
+
+    /// <summary>
+    /// Adds a single static entity’s 3D representation at runtime (e.g. debug POI spawn).
+    /// Does not clear or rebuild the level.
+    /// </summary>
+    public void AppendStaticEntity(SectorEntity entity)
+    {
+        if (_sectorData == null || entity.IsMovable) return;
+        SpawnEntityAs3D(entity);
+        _asteroidPool.Commit();
+        GD.Print($"[LevelGen] AppendStaticEntity — jetzt {_spawnedObjects.Count} Objekte");
     }
 
     // ── 3D scene construction ───────────────────────────────────────
 
-    private void SpawnEntityAs3D(SectorEntity entity)
+    /// <summary>
+    /// Spawns the visual for <paramref name="entity"/>. Returns true when the
+    /// entity was rendered through the <see cref="InstancedAsteroidPool"/>
+    /// (no SceneTree node, MultiMesh transform only).
+    /// </summary>
+    private bool SpawnEntityAs3D(SectorEntity entity)
     {
         var def = AssetLibrary.GetById(entity.AssetId);
-        if (def == null) return;
+        if (def == null) return false;
 
-        var obj = PlaceholderFactory.Create(def, entity.Scale, _sectorData!.BiomeId, entity.Id);
+        if (IsInstanceableAsteroid(def) &&
+            PlaceholderFactory.TryAppendInstanced(
+                def, entity.Scale, _sectorData!.Seed, entity.Id,
+                entity.WorldPosition, entity.Rotation, _asteroidPool))
+        {
+            var stub = new SpawnedObject
+            {
+                InstanceId = entity.Id,
+                AssetId = def.Id,
+                Category = def.Category,
+                BiomeType = _sectorData.BiomeId,
+                ObjectRadius = def.Radius * entity.Scale,
+                Tags = def.Tags,
+                IsLandmark = def.IsLandmark,
+                IsInstanced = true,
+                IsPlaceholder = false,
+                Name = $"{def.Id}_{entity.Id}",
+                SectorEntityId = entity.Id,
+            };
+            stub.Position = entity.WorldPosition;
+            stub.Rotation = entity.Rotation;
+            _spawnedObjects.Add(stub);
+            return true;
+        }
+
+        var obj = PlaceholderFactory.Create(
+            def, entity.Scale, _sectorData!.BiomeId, entity.Id, _sectorData.Seed);
         obj.Position = entity.WorldPosition;
         obj.Rotation = entity.Rotation;
         obj.SectorEntityId = entity.Id;
         _levelContainer.AddChild(obj);
         _spawnedObjects.Add(obj);
+        return false;
     }
+
+    /// <summary>
+    /// Non-landmark asteroids (Small, Medium, Large as scatter/mid fill) are
+    /// safe to instance: no picking, no collision, and no agent logic points
+    /// at them – everything goes through SectorEntity ids, not Node lookups.
+    /// </summary>
+    private static bool IsInstanceableAsteroid(AssetDefinition def)
+    {
+        if (def.IsLandmark) return false;
+        return def.Category is AssetCategory.AsteroidSmall
+            or AssetCategory.AsteroidMedium
+            or AssetCategory.AsteroidLarge;
+    }
+
+    private void ApplySkybox(SectorData data)
+    {
+        var controller = FindSkyController();
+        if (controller == null) return;
+
+        if (!BiomeDefinition.TryGet(data.BiomeId, out var biome)) return;
+        controller.ApplySectorSky(data, biome);
+    }
+
+    /// <summary>
+    /// Re-applies the skybox for the current sector. Called after
+    /// <see cref="SpacedOut.State.GameFeatures.SkyboxEnabled"/> is toggled
+    /// at runtime (via the HUD debug panel) so the change is visible
+    /// without regenerating the level.
+    /// </summary>
+    public void RefreshSkybox()
+    {
+        if (_sectorData != null)
+            ApplySkybox(_sectorData);
+    }
+
+    private SpaceSkyController? FindSkyController()
+    {
+        // The SpaceSkyController replaces the old SpaceBackground stub. It can
+        // sit as a sibling of the LevelGenerator (Main.tscn) or a sibling of
+        // this node's parent chain (LevelGenScene.tscn).
+        var root = GetTree()?.CurrentScene;
+        return root != null ? SearchForController(root) : null;
+    }
+
+    private static SpaceSkyController? SearchForController(Node node)
+    {
+        if (node is SpaceSkyController ctrl) return ctrl;
+        foreach (var child in node.GetChildren())
+        {
+            if (SearchForController(child) is { } match) return match;
+        }
+        return null;
+    }
+
+    private const string JumpArrivalScenePath = "res://Assets/scenes/fx/jump_arrival.tscn";
 
     private void PlaceSpawnVisual(Vector3 spawnPoint)
     {
+        if (ResourceLoader.Exists(JumpArrivalScenePath) &&
+            GD.Load<PackedScene>(JumpArrivalScenePath) is PackedScene packed)
+        {
+            var fx = packed.Instantiate<Node3D>();
+            fx.Name = "SpawnMarker";
+            fx.Position = spawnPoint;
+            _levelContainer.AddChild(fx);
+            return;
+        }
+
+        // Fallback glow sphere until the real FX scene exists.
         var mesh = new SphereMesh { Radius = 2f, Height = 4f };
         var mat = new StandardMaterial3D
         {
@@ -156,8 +281,24 @@ public partial class LevelGenerator : Node3D
     private void ClearLevel()
     {
         foreach (var child in _levelContainer.GetChildren())
+        {
+            // The instanced asteroid pool is re-used across sector builds –
+            // its MultiMesh instance counts are zeroed out via Reset() below.
+            if (child == _asteroidPool) continue;
             child.QueueFree();
+        }
+
+        _asteroidPool.Reset();
+
+        // Instanced stubs never joined the SceneTree. They are plain managed
+        // Godot objects and must be freed explicitly.
+        foreach (var obj in _spawnedObjects)
+        {
+            if (obj.IsInstanced && GodotObject.IsInstanceValid(obj) && !obj.IsInsideTree())
+                obj.Free();
+        }
         _spawnedObjects.Clear();
+
         ValidationMessages.Clear();
         IsValid = true;
     }
@@ -170,7 +311,7 @@ public partial class LevelGenerator : Node3D
         var biome = BiomeDefinition.Get(_sectorData.BiomeId);
         var msgs = SpawnValidator.ValidateLevel(
             _spawnedObjects, _sectorData.SpawnPoint, _sectorData.ExitPoint,
-            biome.SpawnSafeRadius, biome.LevelRadius);
+            biome.SpawnSafeRadius, _sectorData.LevelRadius);
 
         ValidationMessages.AddRange(msgs);
         IsValid = msgs.Count == 0;

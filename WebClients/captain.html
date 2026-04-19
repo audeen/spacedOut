@@ -1,18 +1,31 @@
 <!DOCTYPE html>
 <html lang="de">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>SpacedOut - Kapitän</title>
     <link rel="stylesheet" href="css/style.css">
 </head>
+
 <body>
     <!-- Briefing Overlay -->
     <div class="briefing-overlay hidden" id="briefing-overlay">
         <div class="briefing-card">
-            <h2>Missionsbriefing</h2>
+            <h2 id="briefing-title" data-default-title="Missionsbriefing">Missionsbriefing</h2>
             <p id="briefing-text"></p>
-            <button class="btn btn-primary btn-block" onclick="dismissBriefing()">Verstanden</button>
+            <p id="briefing-effects" class="briefing-effects hidden" aria-live="polite"></p>
+            <button type="button" class="btn btn-primary btn-block" onclick="dismissBriefing()">Verstanden</button>
+        </div>
+    </div>
+
+    <!-- Entscheidungs-Auflösung (vor Missionsbriefing, gleiche Optik) -->
+    <div class="briefing-overlay hidden" id="decision-resolution-overlay" style="z-index:130;">
+        <div class="briefing-card">
+            <h2 id="decision-resolution-title" data-default-title="MISSIONSBRIEFING">MISSIONSBRIEFING</h2>
+            <p id="decision-resolution-text"></p>
+            <p id="decision-resolution-effects" class="briefing-effects hidden" aria-live="polite"></p>
+            <button type="button" class="btn btn-primary btn-block" id="decision-resolution-cta" onclick="onDecisionResolutionContinue()">Verstanden</button>
         </div>
     </div>
 
@@ -42,6 +55,31 @@
         <div class="panel" id="decisions-panel" style="display:none;">
             <div class="panel-title">⚠ Ausstehende Entscheidungen</div>
             <div id="decisions-container" class="decision-list"></div>
+        </div>
+
+        <!-- Run Resources -->
+        <div class="panel" id="run-resources-panel" style="display:none;">
+            <div class="panel-title">Run-Ressourcen</div>
+            <div class="status-row">
+                <span class="status-label">Ersatzteile</span>
+                <span class="status-value text-cyan" id="rr-parts" style="font-size:16px;">0</span>
+            </div>
+            <div class="status-row">
+                <span class="status-label">Forschungsdaten</span>
+                <span class="status-value text-cyan" id="rr-data" style="font-size:16px;">0</span>
+            </div>
+            <div class="status-row">
+                <span class="status-label">Treibstoff</span>
+                <span class="status-value text-cyan" id="rr-fuel" style="font-size:16px;">0</span>
+            </div>
+            <div class="status-row">
+                <span class="status-label">Credits</span>
+                <span class="status-value text-cyan" id="rr-credits" style="font-size:16px;">0</span>
+            </div>
+            <div class="status-row" id="rr-perk-row" style="display:none;">
+                <span class="status-label">Aktiver Perk</span>
+                <span class="status-value text-yellow" id="rr-perk" style="font-size:14px;">—</span>
+            </div>
         </div>
 
         <!-- Status Overview -->
@@ -76,6 +114,103 @@
             <div id="overlays-container" class="overlay-list"></div>
         </div>
 
+        <!-- Dock Trading (Station sectors only) -->
+        <div class="panel dock-panel-wrap" id="dock-panel" style="display:none; border-left:3px solid var(--cyan);">
+            <div class="panel-title">Station-Handel</div>
+            <div id="dock-status-line" class="text-dim" style="font-size:12px; margin-bottom:8px;">—</div>
+            <div id="dock-buy-container" style="display:none;">
+                <div class="dock-stock">
+                    <div class="dock-stock-title">Euer Lager</div>
+                    <div class="dock-stock-grid">
+                        <div class="dock-stock-cell">
+                            <span class="dock-stock-label">Treibstoff</span>
+                            <span class="dock-stock-value text-cyan" id="dock-stock-fuel">—</span>
+                        </div>
+                        <div class="dock-stock-cell">
+                            <span class="dock-stock-label">Ersatzteile</span>
+                            <span class="dock-stock-value text-cyan" id="dock-stock-parts">—</span>
+                        </div>
+                        <div class="dock-stock-cell">
+                            <span class="dock-stock-label">Forschung</span>
+                            <span class="dock-stock-value text-cyan" id="dock-stock-data">—</span>
+                        </div>
+                        <div class="dock-stock-cell">
+                            <span class="dock-stock-label">Credits</span>
+                            <span class="dock-stock-value text-cyan" id="dock-stock-credits">—</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="dock-commodity">
+                    <div class="dock-commodity-name">Treibstoff</div>
+                    <div class="dock-trade-row">
+                        <span class="dock-trade-action">Kaufen</span>
+                        <div class="dock-trade-buttons">
+                            <button type="button" class="btn btn-sm btn-primary" onclick="dockBuy('Fuel', 1)">1</button>
+                            <button type="button" class="btn btn-sm btn-primary" onclick="dockBuy('Fuel', 5)">5</button>
+                        </div>
+                        <span class="dock-price-buy text-cyan" id="dock-fuel-price">—</span>
+                    </div>
+                    <div class="dock-trade-row">
+                        <span class="dock-trade-action">Verkaufen</span>
+                        <div class="dock-trade-buttons">
+                            <button type="button" class="btn btn-sm" onclick="dockSell('Fuel', 1)">1</button>
+                            <button type="button" class="btn btn-sm" onclick="dockSell('Fuel', 5)">5</button>
+                        </div>
+                        <span class="dock-price-sell" id="dock-fuel-sell-price">—</span>
+                    </div>
+                </div>
+
+                <div class="dock-commodity">
+                    <div class="dock-commodity-name">Ersatzteile</div>
+                    <div class="dock-trade-row">
+                        <span class="dock-trade-action">Kaufen</span>
+                        <div class="dock-trade-buttons">
+                            <button type="button" class="btn btn-sm btn-primary" onclick="dockBuy('SpareParts', 1)">1</button>
+                            <button type="button" class="btn btn-sm btn-primary" onclick="dockBuy('SpareParts', 5)">5</button>
+                        </div>
+                        <span class="dock-price-buy text-cyan" id="dock-parts-price">—</span>
+                    </div>
+                    <div class="dock-trade-row">
+                        <span class="dock-trade-action">Verkaufen</span>
+                        <div class="dock-trade-buttons">
+                            <button type="button" class="btn btn-sm" onclick="dockSell('SpareParts', 1)">1</button>
+                            <button type="button" class="btn btn-sm" onclick="dockSell('SpareParts', 5)">5</button>
+                        </div>
+                        <span class="dock-price-sell" id="dock-parts-sell-price">—</span>
+                    </div>
+                </div>
+
+                <div class="dock-commodity">
+                    <div class="dock-commodity-name">Forschungsdaten</div>
+                    <div class="dock-trade-row">
+                        <span class="dock-trade-action">Kaufen</span>
+                        <div class="dock-trade-buttons">
+                            <button type="button" class="btn btn-sm btn-primary" onclick="dockBuy('ScienceData', 1)">1</button>
+                            <button type="button" class="btn btn-sm btn-primary" onclick="dockBuy('ScienceData', 5)">5</button>
+                        </div>
+                        <span class="dock-price-buy text-cyan" id="dock-data-price">—</span>
+                    </div>
+                    <div class="dock-trade-row">
+                        <span class="dock-trade-action">Verkaufen</span>
+                        <div class="dock-trade-buttons">
+                            <button type="button" class="btn btn-sm" onclick="dockSell('ScienceData', 1)">1</button>
+                            <button type="button" class="btn btn-sm" onclick="dockSell('ScienceData', 5)">5</button>
+                        </div>
+                        <span class="dock-price-sell" id="dock-data-sell-price">—</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Sector exit (Captain) -->
+        <div class="panel" id="sector-jump-panel" style="display:none; border-left:3px solid var(--green);">
+            <div class="panel-title">Sektorausgang</div>
+            <p id="sector-jump-hint" class="text-dim" style="font-size:12px; margin-bottom:8px;">—</p>
+            <button class="btn btn-success btn-block" id="btn-leave-sector" disabled onclick="sendLeaveSector()">Sektor
+                verlassen</button>
+        </div>
+
         <!-- Actions -->
         <div class="panel">
             <div class="panel-title">Aktionen</div>
@@ -97,7 +232,8 @@
                 <button class="log-filter-btn" data-filter="Navigator" onclick="setLogFilter('Navigator')">Nav</button>
                 <button class="log-filter-btn" data-filter="Engineer" onclick="setLogFilter('Engineer')">Eng</button>
                 <button class="log-filter-btn" data-filter="Tactical" onclick="setLogFilter('Tactical')">Tac</button>
-                <button class="log-filter-btn" data-filter="Navigation" onclick="setLogFilter('Navigation')">Route</button>
+                <button class="log-filter-btn" data-filter="Navigation"
+                    onclick="setLogFilter('Navigation')">Route</button>
             </div>
             <div class="log-container" id="log-container"></div>
         </div>
@@ -106,4 +242,5 @@
     <script src="js/client.js"></script>
     <script src="js/captain.js"></script>
 </body>
+
 </html>

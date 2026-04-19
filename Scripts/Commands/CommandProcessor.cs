@@ -3,7 +3,9 @@ using System.Collections.Generic;
 using System.Text.Json;
 using Godot;
 using SpacedOut.Commands.Handlers;
+using SpacedOut.Mission;
 using SpacedOut.Network;
+using SpacedOut.Orchestration;
 using SpacedOut.Sector;
 using SpacedOut.State;
 
@@ -14,25 +16,38 @@ public partial class CommandProcessor : Node, ICommandContext
     private GameState _state = null!;
     private GameServer _server = null!;
     private SectorData? _sectorData;
+    private MissionController? _missionController;
+    private MissionOrchestrator? _missionOrchestrator;
+    private BroadcastService? _broadcastService;
 
     [Signal] public delegate void StateChangedEventHandler();
     [Signal] public delegate void MissionLogAddedEventHandler(string source, string message);
     [Signal] public delegate void NodeSelectedEventHandler(string nodeId);
     [Signal] public delegate void RunResolveRequestedEventHandler(string nodeId, string resolution);
+    [Signal] public delegate void ScanRunNodeRequestedEventHandler(string nodeId);
+    [Signal] public delegate void PreSectorDecisionResolvedEventHandler(string nodeId, string eventId, bool skipSector);
 
     private CaptainNavCommandHandler _captainNavHandler = null!;
     private EngineerCommandHandler _engineerHandler = null!;
     private TacticalCommandHandler _tacticalHandler = null!;
     private GunnerCommandHandler _gunnerHandler = null!;
     private CommonCommandHandler _commonHandler = null!;
+    private DockCommandHandler _dockHandler = null!;
 
     GameState ICommandContext.State => _state;
     SectorData? ICommandContext.CurrentSector => _sectorData;
+    MissionController? ICommandContext.MissionController => _missionController;
+    MissionOrchestrator? ICommandContext.Orchestrator => _missionOrchestrator;
 
     Action<string>? ICommandContext.OnNodeSelected { get; set; }
     Action<string, string>? ICommandContext.OnRunResolveRequested { get; set; }
+    Action<string>? ICommandContext.OnScanRunNodeRequested { get; set; }
+    Action<string, string, bool>? ICommandContext.OnPreSectorDecisionResolved { get; set; }
 
     public void SetSectorData(SectorData? data) => _sectorData = data;
+    public void SetMissionController(MissionController controller) => _missionController = controller;
+    public void SetMissionOrchestrator(MissionOrchestrator orchestrator) => _missionOrchestrator = orchestrator;
+    public void SetBroadcastService(BroadcastService broadcast) => _broadcastService = broadcast;
 
     public void Initialize(GameState state, GameServer server)
     {
@@ -44,11 +59,16 @@ public partial class CommandProcessor : Node, ICommandContext
         _tacticalHandler = new TacticalCommandHandler(this);
         _gunnerHandler = new GunnerCommandHandler(this);
         _commonHandler = new CommonCommandHandler(this);
+        _dockHandler = new DockCommandHandler(this);
 
         ((ICommandContext)this).OnNodeSelected = nodeId =>
             EmitSignal(SignalName.NodeSelected, nodeId);
         ((ICommandContext)this).OnRunResolveRequested = (nodeId, resolution) =>
             EmitSignal(SignalName.RunResolveRequested, nodeId, resolution);
+        ((ICommandContext)this).OnScanRunNodeRequested = nodeId =>
+            EmitSignal(SignalName.ScanRunNodeRequested, nodeId);
+        ((ICommandContext)this).OnPreSectorDecisionResolved = (nodeId, eventId, skipSector) =>
+            EmitSignal(SignalName.PreSectorDecisionResolved, nodeId, eventId, skipSector);
     }
 
     public bool ProcessCommand(string clientId, string messageJson)
@@ -74,6 +94,9 @@ public partial class CommandProcessor : Node, ICommandContext
             if (_commonHandler.Handle(command, role, data))
                 return true;
 
+            if (_dockHandler.Handle(command, role, data))
+                return true;
+
             return role switch
             {
                 StationRole.CaptainNav => _captainNavHandler.Handle(command, data, role),
@@ -92,11 +115,12 @@ public partial class CommandProcessor : Node, ICommandContext
 
     void ICommandContext.AddLog(string source, string message)
     {
-        _state.Mission.Log.Add(new MissionLogEntry
+        if (string.IsNullOrWhiteSpace(message)) return;
+        _state.AddMissionLogEntry(new MissionLogEntry
         {
             Timestamp = _state.Mission.ElapsedTime,
             Source = source,
-            Message = message,
+            Message = message.Trim(),
         });
         EmitSignal(SignalName.MissionLogAdded, source, message);
     }
@@ -104,5 +128,10 @@ public partial class CommandProcessor : Node, ICommandContext
     void ICommandContext.EmitStateChanged()
     {
         EmitSignal(SignalName.StateChanged);
+    }
+
+    void ICommandContext.NotifyDecisionResolved(string narrative, string effectsLine, string? decisionTitle, string? optionLabel, bool cinematicResolution)
+    {
+        _broadcastService?.SendDecisionResolvedToCaptainNav(narrative, effectsLine, decisionTitle, optionLabel, cinematicResolution);
     }
 }

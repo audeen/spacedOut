@@ -4,6 +4,8 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Linq;
 using Godot;
+using SpacedOut.Mission;
+using SpacedOut.Orchestration;
 using SpacedOut.Poi;
 using SpacedOut.Run;
 using SpacedOut.Shared;
@@ -13,6 +15,9 @@ namespace SpacedOut.State;
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum FlightMode { Cruise, Approach, Evasive, Hold }
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum TargetTrackingMode { None, Follow, Orbit, KeepAtRange }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum MissionPhase { Briefing, Anflug, Stoerung, Krisenfenster, Abschluss, Operational, Ended }
@@ -126,6 +131,63 @@ public class MissionState
     // Pre-computed map position of the encounter marker (for TriggerUnknownContact)
     public float EncounterSpawnX { get; set; } = 900f;
     public float EncounterSpawnY { get; set; } = 800f;
+
+    /// <summary>When true, the sector exit (Sprungkoordinaten) has been revealed — either via
+    /// scripted mission progress (tutorial: relay scan) or a probe hit on the exit marker
+    /// (M1b procedural sectors).</summary>
+    public bool JumpCoordinatesUnlocked { get; set; }
+
+    /// <summary>When true, the current scripted mission gates the exit behind a specific event
+    /// (e.g. tutorial: relay extraction). In that mode, probes do NOT reveal the exit marker.
+    /// False for procedural (non-scripted) sectors: probe hits reveal the exit.</summary>
+    public bool ScriptLocksExitUntilScan { get; set; }
+
+    /// <summary>True when the active sector has no mission script (procedural run node).
+    /// Used with <see cref="SpacedOut.Mission.SectorJumpCompletion"/> for exit completion rules.</summary>
+    public bool ProceduralSectorMission { get; set; }
+
+    // ── M1b: sector harvest tally ─────────────────────────────────
+    /// <summary>Snapshot of RunStateData.Resources at mission start — used by the HUD to show
+    /// the current sector's harvest delta.</summary>
+    public Dictionary<string, int> MissionStartResourcesSnapshot { get; set; } = new();
+
+    // ── M5: dock state (only populated in Station sectors) ────────
+    /// <summary>True while the ship is parked near a <c>station_dock</c> contact in a Station sector.</summary>
+    public bool Docked { get; set; }
+    /// <summary>Id of the dock contact we're currently docked with.</summary>
+    public string? DockedContactId { get; set; }
+    /// <summary>Per-station prices + repair rate; null outside Station sectors.</summary>
+    public StationInventory? Dock { get; set; }
+    /// <summary>Live distance (map units) from the ship to the <c>station_dock</c> contact; -1 outside Station sectors.</summary>
+    public float DockDistance { get; set; } = -1f;
+
+    // ── M4: Node-Event (Pre-Sector) ───────────────────────────────
+    /// <summary>
+    /// True while a <see cref="NodeEventCatalog"/> event fires at the run-map <em>before</em> the sector is built.
+    /// While true, sector generation is deferred and all HUDs show a "Funkspruch" banner instead of sector info.
+    /// Cleared in <see cref="MissionOrchestrator"/> after the decision is resolved.
+    /// </summary>
+    public bool PreSectorEventActive { get; set; }
+
+    /// <summary>Id of the <see cref="NodeEvent"/> currently pending at the pre-sector overlay (empty when none).</summary>
+    public string PendingPreSectorEventId { get; set; } = "";
+
+    /// <summary>Run-node that owns <see cref="PendingPreSectorEventId"/> — used by the resolver to either skip the sector or build it.</summary>
+    public string PendingPreSectorNodeId { get; set; } = "";
+
+    /// <summary>Title of the pending pre-sector event — shown in Godot HUD/Captain banner.</summary>
+    public string PendingPreSectorEventTitle { get; set; } = "";
+
+    /// <summary>Risk rating of the active run node (0 = safe, higher = more dangerous). Used by
+    /// <see cref="SpacedOut.Mission.DecisionEffectResolver"/> to filter risk-gated spawns
+    /// (see <see cref="DeferredAgentSpawn.MinRisk"/>).</summary>
+    public int NodeRiskRating { get; set; }
+
+    /// <summary>Latest Captain/CaptainNav line for main-screen comms highlight.</summary>
+    public string LastCommsHighlight { get; set; } = "";
+
+    /// <summary>Latest decision resolution summary for main-screen HUD.</summary>
+    public string LastDecisionHighlight { get; set; } = "";
 }
 
 public class MissionDecision
@@ -143,6 +205,64 @@ public class DecisionOption
     public string Id { get; set; } = "";
     public string Label { get; set; } = "";
     public string Description { get; set; } = "";
+
+    /// <summary>FTL-style thematic hint shown under the option in Captain/Nav UI — never reveals exact numbers.</summary>
+    public string FlavorHint { get; set; } = "";
+
+    /// <summary>
+    /// Prosatext zur Auflösung für den Kommandanten-Toast (nach Wahl). Never serialized — avoids spoilers in state.
+    /// </summary>
+    [JsonIgnore]
+    public string ResolutionNarrative { get; set; } = "";
+
+    /// <summary>Server-side effects applied on resolution. Never serialized to clients.</summary>
+    [JsonIgnore]
+    public DecisionEffects? Effects { get; set; }
+}
+
+/// <summary>
+/// Server-side effect bundle applied by <see cref="SpacedOut.Mission.DecisionEffectResolver"/>
+/// when a <see cref="DecisionOption"/> is resolved. Only the numbers are server-authoritative;
+/// UI shows <see cref="DecisionOption.FlavorHint"/> instead to keep choices thematic.
+/// </summary>
+public class DecisionEffects
+{
+    /// <summary>Delta per resource id (see <see cref="RunResourceIds"/>), applied to <c>ActiveRunState.Resources</c>.</summary>
+    public Dictionary<string, int> ResourceDeltas { get; set; } = new();
+
+    /// <summary>Delta to <see cref="ShipState.HullIntegrity"/> (clamped to 0..100).</summary>
+    public float HullDelta { get; set; }
+
+    public List<string> FlagsToSet { get; set; } = new();
+    public List<string> FlagsToClear { get; set; } = new();
+
+    /// <summary>Heat / status overrides for ship systems.</summary>
+    public List<SystemEffect> SystemEffects { get; set; } = new();
+
+    /// <summary>Agents queued to spawn (re-uses <see cref="MissionController"/> deferred-spawn path).</summary>
+    public List<DeferredAgentSpawn> SpawnAgents { get; set; } = new();
+
+    /// <summary>POIs queued to spawn (resolved by <see cref="SpacedOut.Orchestration.MissionOrchestrator"/> into 3D entities + <see cref="Contact"/>).</summary>
+    public List<DeferredPoiSpawn> SpawnPois { get; set; } = new();
+
+    /// <summary>When true and this is a Pre-Sector event, the sector is skipped and the run node resolves as <see cref="Run.NodeResolution.Success"/>.</summary>
+    public bool SkipSector { get; set; }
+
+    /// <summary>Short captain-log line appended after the effects are applied. Null/empty = no log.</summary>
+    public string? LogSummary { get; set; }
+}
+
+/// <summary>Whether a mission log line should raise a floating toast on web stations.</summary>
+public enum MissionLogWebToast
+{
+    /// <summary>Client applies defaults (e.g. skip duplicate Gunner lines for Gunner station).</summary>
+    Unspecified = 0,
+    /// <summary>Main screen / in-panel log only — no web popup.</summary>
+    LogOnly = 1,
+    /// <summary>Standard toast.</summary>
+    Toast = 2,
+    /// <summary>Longer display (phase changes, mission end, key beats).</summary>
+    ToastProminent = 3,
 }
 
 public class MissionLogEntry
@@ -150,6 +270,28 @@ public class MissionLogEntry
     public float Timestamp { get; set; }
     public string Source { get; set; } = "";
     public string Message { get; set; } = "";
+    /// <summary>Web HUD: suppress or emphasize floating toasts for this line.</summary>
+    public MissionLogWebToast WebToast { get; set; }
+}
+
+/// <summary>Maps mission log <see cref="MissionLogEntry.Source"/> to which station should see web toasts.</summary>
+public static class MissionLogRouting
+{
+    public static bool IsVisibleToRole(string source, StationRole role)
+    {
+        if (source == "System")
+            return role is StationRole.CaptainNav or StationRole.Engineer or StationRole.Tactical
+                or StationRole.Gunner;
+
+        return role switch
+        {
+            StationRole.CaptainNav => source is "CaptainNav" or "Captain" or "Navigation" or "Navigator",
+            StationRole.Engineer => source == "Engineer",
+            StationRole.Tactical => source == "Tactical",
+            StationRole.Gunner => source == "Gunner",
+            _ => false,
+        };
+    }
 }
 
 public class Contact
@@ -172,12 +314,18 @@ public class Contact
     public float VelocityZ { get; set; }
 
     public DiscoveryState Discovery { get; set; } = DiscoveryState.Hidden;
-    /// <summary>Elapsed-time timestamp when probe snapshot expires (Probed contacts revert to Hidden).</summary>
+    /// <summary>
+    /// Ghost-memory end time (<see cref="Mission.MissionState.ElapsedTime"/>). Negative = still in live probe phase
+    /// (timer starts when coverage ends). When non-negative and elapsed &gt;= value, Probed reverts to Hidden (or Detected in range).
+    /// </summary>
     public float ProbeExpiry { get; set; }
-    /// <summary>Frozen position captured when a probe revealed this contact.</summary>
+    /// <summary>Frozen position captured when live probe coverage ends (not on deploy).</summary>
     public float SnapshotX { get; set; }
     public float SnapshotY { get; set; }
     public float SnapshotZ { get; set; }
+    /// <summary>Previous tick: contact was inside an active probe reveal ring (simulation only).</summary>
+    [JsonIgnore]
+    public bool ProbeCoveredLastFrame { get; set; }
     /// <summary>When true, this contact is visible on the navigator's map (must be explicitly released by tactical).</summary>
     public bool ReleasedToNav { get; set; }
     /// <summary>Known objects (stations, mission targets, beacons) that bypass the fog-of-war pipeline entirely.</summary>
@@ -186,6 +334,10 @@ public class Contact
     /// When true, a Detected blip is drawn out to full sensor range; when false, only the inner range ring (sensor/3).
     /// </summary>
     public bool RadarShowDetectedInFullRange { get; set; }
+    /// <summary>
+    /// When true, <see cref="DiscoveryState.Detected"/> is not cleared to Hidden when the ship moves beyond passive sensor range (mission sensor lock).
+    /// </summary>
+    public bool PersistDetectedBeyondSensorRange { get; set; }
     /// <summary>Tactical has designated this as a priority target for the gunner (+25% damage).</summary>
     public bool IsDesignated { get; set; }
     /// <summary>Tactical has completed a deep analysis revealing weaknesses (+50% damage).</summary>
@@ -233,6 +385,16 @@ public class Contact
     /// <summary>AI behavior state for agent-controlled contacts (null for static/scripted contacts).</summary>
     [JsonIgnore]
     public AgentState? Agent { get; set; }
+
+    /// <summary>
+    /// Combat removal: no drift, hidden from main-screen contact lists. Not used for loot-wreck conversion.
+    /// </summary>
+    public void ApplyCombatDestruction()
+    {
+        IsDestroyed = true;
+        VelocityX = VelocityY = VelocityZ = 0;
+        IsVisibleOnMainScreen = false;
+    }
 }
 
 public class AgentState
@@ -254,6 +416,9 @@ public class AgentState
     public float ModeTimer { get; set; }
     public int OrbitDirection { get; set; } = 1;
     public float PhaseOffset { get; set; }
+
+    /// <summary>Multiplier for attack ideal standoff (applied to AttackRange × 0.7). Set at spawn.</summary>
+    public float AttackIdealDistFactor { get; set; } = 1f;
 }
 
 public class MapResourceZone
@@ -318,6 +483,8 @@ public class GameEvent
     public bool IsActive { get; set; }
     public bool IsResolved { get; set; }
     public float TimeRemaining { get; set; }
+    /// <summary>When false, event is omitted from Godot main screen &quot;Aktive Ereignisse&quot; (still in CaptainNav / other stations).</summary>
+    public bool ShowOnMainScreen { get; set; } = true;
 }
 
 public class GunnerState
@@ -374,6 +541,8 @@ public class GameState
     public RunStateSnapshot Run { get; } = new();
     public GunnerState Gunner { get; set; } = new();
     public DebugFlags Debug { get; } = new();
+    [JsonIgnore]
+    public CombatFxState CombatFx { get; } = new();
     public List<PinnedEntity> PinnedEntities { get; set; } = new();
     public List<MapResourceZone> ResourceZones { get; set; } = new();
     public const int MaxPins = 3;
@@ -389,6 +558,38 @@ public class GameState
     public bool RunActive { get => Run.IsActive; set => Run.IsActive = value; }
     public RunStateData? ActiveRunState { get => Run.State; set => Run.State = value; }
     public RunDefinition? ActiveRunDefinition { get => Run.Definition; set => Run.Definition = value; }
+    public RunOutcome RunOutcome { get => Run.Outcome; set => Run.Outcome = value; }
+    public bool ShowMainMenu { get => Run.ShowMainMenu; set => Run.ShowMainMenu = value; }
+
+    // ── M7 (Meta-Progression) ─────────────────────────────────────
+    /// <summary>Sternenstaub gained at the last run-end — surfaced in the <c>RunEndOverlay</c>.</summary>
+    public int LastRunStardustGain { get; set; }
+    /// <summary>Active loadout perk id for the current run (null when none active or no run in progress).</summary>
+    public string? ActivePerkId { get; set; }
+    /// <summary>Display name of the active perk (cached so web clients don't need the catalog).</summary>
+    public string ActivePerkName { get; set; } = "";
+    /// <summary>True while the meta profile/upgrade overlay is visible.</summary>
+    public bool ShowProfile { get; set; }
+
+    /// <summary>Raised for every line appended to <see cref="MissionState.Log"/> (including mission controller paths).</summary>
+    public event Action<MissionLogEntry>? MissionLogEntryAdded;
+
+    public void AddMissionLogEntry(MissionLogEntry entry)
+    {
+        Mission.Log.Add(entry);
+        if (entry.Source == "CaptainNav")
+            Mission.LastCommsHighlight = entry.Message ?? "";
+        MissionLogEntryAdded?.Invoke(entry);
+    }
+
+    /// <summary>Raised when a new entry is appended to <see cref="MissionState.PendingDecisions"/> (Kommandant-Web-Toasts).</summary>
+    public event Action<MissionDecision>? PendingDecisionAdded;
+
+    public void AddPendingDecision(MissionDecision decision)
+    {
+        Mission.PendingDecisions.Add(decision);
+        PendingDecisionAdded?.Invoke(decision);
+    }
 
     public Dictionary<string, object> GetStateForRole(StationRole role)
     {
@@ -411,8 +612,16 @@ public class GameState
                 data["ship_z"] = Ship.PositionZ;
                 data["speed_level"] = Ship.SpeedLevel;
                 data["route"] = Route;
+                var tt = Navigation.TargetTracking;
+                data["target_tracking"] = new Dictionary<string, object>
+                {
+                    ["mode"] = tt.Mode.ToString(),
+                    ["contact_id"] = tt.TrackedContactId ?? "",
+                    ["range"] = tt.Range,
+                    ["orbit_clockwise"] = tt.OrbitClockwise,
+                };
                 data["contacts"] = Contacts.FindAll(c =>
-                    c.Discovery == DiscoveryState.Scanned && c.ReleasedToNav && !c.IsDestroyed);
+                    c.Discovery == DiscoveryState.Scanned && !c.IsDestroyed && IsContactAvailableToCaptainNav(c));
                 data["sensor_range"] = CalculateSensorRange();
                 data["drive_energy"] = Ship.Energy.Drive;
                 data["drive_status"] = Ship.Systems[SystemId.Drive].Status.ToString();
@@ -420,6 +629,7 @@ public class GameState
                 data["mission_title"] = Mission.MissionTitle;
                 data["use_structured_phases"] = Mission.UseStructuredMissionPhases;
                 data["star_map_on_main_screen"] = ShowStarMapOnMainScreen;
+                data["sector_jump_available"] = SectorJumpCompletion.IsReady(this);
                 data["resource_zones"] = GameFeatures.ResourceZonesEnabled
                     ? ResourceZones.FindAll(z => z.Discovery != "Hidden")
                     : new List<MapResourceZone>();
@@ -451,6 +661,7 @@ public class GameState
                             ["PoiProgress"] = c.PoiProgress,
                             ["PoiExtracting"] = c.PoiExtracting,
                             ["UsesTractorBeam"] = bp?.UsesTractorBeam ?? false,
+                            ["RequiresDrill"] = bp?.RequiresDrill ?? false,
                         };
                     })
                     .ToList();
@@ -468,6 +679,10 @@ public class GameState
                 data["sensor_energy"] = Ship.Energy.Sensors;
                 data["sensor_status"] = Ship.Systems[SystemId.Sensors].Status.ToString();
                 data["sensor_range"] = CalculateSensorRange();
+                data["sensor_range_nominal"] = ShipCalculations.CalculateSensorRangeIgnoringSystemStatus(
+                    Ship, ContactsState.ActiveSensors);
+                data["sensor_status_mult_range"] = ShipCalculations.GetStatusMultiplier(
+                    Ship.Systems[SystemId.Sensors].Status);
                 data["active_events"] = ActiveEvents.FindAll(e => e.IsActive);
                 data["ship_x"] = Ship.PositionX;
                 data["ship_y"] = Ship.PositionY;
@@ -523,7 +738,62 @@ public class GameState
         }
 
         AppendRunData(data, role);
+        AppendDockData(data);
+        AppendEventBanners(data, role);
         return data;
+    }
+
+    /// <summary>
+    /// M4: broadcast minimal indicators for an active <see cref="NodeEvent"/>:
+    /// <list type="bullet">
+    ///   <item><c>mission_pending_decision</c> (bool) — any undecided <see cref="MissionDecision"/> pending.</item>
+    ///   <item><c>mission_pre_sector_event_active</c> (bool) — Pre-Sector overlay dialog is open.</item>
+    ///   <item><c>mission_pre_sector_event_title</c> (string) — short title for Captain banner.</item>
+    /// </list>
+    /// Details (options, effects) are only exposed to <see cref="StationRole.CaptainNav"/> via the regular
+    /// <c>pending_decisions</c> channel — other roles only see the indicator flags.
+    /// </summary>
+    private void AppendEventBanners(Dictionary<string, object> data, StationRole role)
+    {
+        bool pendingDecision = Mission.PendingDecisions.Exists(d => !d.IsResolved);
+        data["mission_pending_decision"] = pendingDecision;
+        data["mission_pre_sector_event_active"] = Mission.PreSectorEventActive;
+        data["mission_pre_sector_event_title"] = Mission.PreSectorEventActive
+            ? Mission.PendingPreSectorEventTitle
+            : "";
+    }
+
+    /// <summary>
+    /// Common dock block (Station sectors only). Added for every role so web clients
+    /// can uniformly show dock status / prices.
+    /// </summary>
+    private void AppendDockData(Dictionary<string, object> data)
+    {
+        var m = Mission;
+        data["mission_docked"] = m.Docked;
+        data["docked_contact_id"] = m.DockedContactId ?? "";
+        data["dock_distance"] = m.DockDistance;
+        if (m.Dock != null)
+        {
+            var d = m.Dock;
+            data["dock"] = new Dictionary<string, object>
+            {
+                ["FuelPrice"] = d.FuelPrice,
+                ["PartsPrice"] = d.PartsPrice,
+                ["DataPrice"] = d.DataPrice,
+                ["FuelSellPrice"] = d.SellPriceFor(RunResourceIds.Fuel),
+                ["PartsSellPrice"] = d.SellPriceFor(RunResourceIds.SpareParts),
+                ["DataSellPrice"] = d.SellPriceFor(RunResourceIds.ScienceData),
+                ["HullPerPart"] = d.HullPerPart,
+                ["Available"] = true,
+                ["ProximityRange"] = 60,
+                ["MaxSpeedLevel"] = 2,
+            };
+        }
+        else
+        {
+            data["dock"] = new Dictionary<string, object> { ["Available"] = false };
+        }
     }
 
     private void AppendRunData(Dictionary<string, object> data, StationRole role)
@@ -548,24 +818,34 @@ public class GameState
             st.NodeStates.TryGetValue(st.LastResolvedNodeId, out var lastRt))
             lastRes = lastRt.Resolution.ToString();
         data["run_last_resolution"] = lastRes;
+        data["run_scan_cost"] = RunController.ScanCostScience;
+
+        int effectiveDepth = ComputeEffectiveDepth(st, def);
+        int scanHorizon = effectiveDepth + RunController.MaxScanDepthAhead;
 
         var nodes = def.Nodes.Values.Select(n =>
         {
             st.NodeStates.TryGetValue(n.Id, out var nrt);
-            var nk = nrt?.Knowledge ?? NodeKnowledgeState.Unknown;
-            var hide = nk is NodeKnowledgeState.Unknown or NodeKnowledgeState.Detected;
+            var nk = nrt?.Knowledge ?? NodeKnowledgeState.Silhouette;
+            bool sighted = nk != NodeKnowledgeState.Silhouette;
+            bool scanned = nk == NodeKnowledgeState.Scanned;
             return new Dictionary<string, object>
             {
                 ["id"] = n.Id,
-                ["title"] = hide ? "" : n.Title,
-                ["type"] = hide ? "?" : n.Type.ToString(),
+                ["title"] = sighted ? n.Title : "",
+                ["type"] = sighted ? n.Type.ToString() : "?",
                 ["depth"] = n.Depth,
-                ["risk"] = n.RiskRating,
+                ["risk"] = sighted ? n.RiskRating : 0,
                 ["layout_x"] = n.LayoutX,
                 ["layout_y"] = n.LayoutY,
                 ["state"] = nrt != null ? nrt.State.ToString() : "",
                 ["knowledge"] = nk.ToString(),
+                ["scannable"] = n.Depth <= scanHorizon,
                 ["next"] = new List<string>(n.NextNodeIds),
+                ["fuel_cost"] = NodeEncounterConfig.GetFuelCostFor(n.Type),
+                ["briefing_preview"] = scanned
+                    ? MissionOrchestrator.GetBriefingPreviewForRunNode(n)
+                    : "",
             };
         }).ToList();
         data["run_nodes"] = nodes;
@@ -583,6 +863,20 @@ public class GameState
         {
             data["run_placeholder"] = true;
         }
+    }
+
+    /// <summary>
+    /// Mirrors <see cref="RunController.CurrentDepth"/> for snapshot construction (no controller available here).
+    /// </summary>
+    private static int ComputeEffectiveDepth(RunStateData st, RunDefinition def)
+    {
+        if (!string.IsNullOrEmpty(st.CurrentNodeId)
+            && def.Nodes.TryGetValue(st.CurrentNodeId, out var cn))
+            return cn.Depth;
+        if (!string.IsNullOrEmpty(st.LastResolvedNodeId)
+            && def.Nodes.TryGetValue(st.LastResolvedNodeId, out var ln))
+            return ln.Depth;
+        return st.CurrentDepth;
     }
 
     private Dictionary<string, string> GetSystemsSummary()
@@ -604,6 +898,18 @@ public class GameState
         return dx * dx + dy * dy <= range * range;
     }
 
+    /// <summary>
+    /// Navigator/Captain contact list: tactical <see cref="Contact.ReleasedToNav"/>, or hostile contacts
+    /// that are fully scanned and currently within the ship sensor radius (no tactical release required).
+    /// </summary>
+    public bool IsContactAvailableToCaptainNav(Contact c)
+    {
+        if (c.ReleasedToNav) return true;
+        if (c.Type != ContactType.Hostile || c.Discovery != DiscoveryState.Scanned || c.IsDestroyed)
+            return false;
+        return IsInSensorRange(c);
+    }
+
     public Dictionary<string, object> GetMainScreenState()
     {
         var data = new Dictionary<string, object>();
@@ -613,12 +919,13 @@ public class GameState
         data["flight_mode"] = Ship.FlightMode.ToString();
         data["speed_level"] = Ship.SpeedLevel;
         data["hull_integrity"] = Ship.HullIntegrity;
-        data["contacts"] = Contacts.FindAll(c => c.IsVisibleOnMainScreen && c.Discovery == DiscoveryState.Scanned);
+        data["contacts"] = Contacts.FindAll(c =>
+            c.IsVisibleOnMainScreen && c.Discovery == DiscoveryState.Scanned && !c.IsDestroyed);
         data["overlays"] = Overlays.FindAll(o => o.ApprovedByCaptain && !o.Dismissed);
         data["mission_phase"] = Mission.Phase.ToString();
         data["mission_title"] = Mission.MissionTitle;
         data["use_structured_phases"] = Mission.UseStructuredMissionPhases;
-        data["active_events"] = ActiveEvents.FindAll(e => e.IsActive);
+        data["active_events"] = ActiveEvents.FindAll(e => e.IsActive && e.ShowOnMainScreen);
         data["route"] = Route;
         data["pinned_entities"] = PinnedEntities;
         return data;

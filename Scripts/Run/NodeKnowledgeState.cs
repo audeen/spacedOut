@@ -2,7 +2,7 @@ namespace SpacedOut.Run;
 
 public enum NodeKnowledgeState
 {
-    Unknown,
-    Detected,
-    Identified,
+    Silhouette = 0,
+    Sighted = 1,
+    Scanned = 2,
 }

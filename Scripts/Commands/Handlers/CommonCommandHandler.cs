@@ -20,6 +20,7 @@ public class CommonCommandHandler
         {
             CommandNames.SelectNode => HandleSelectNode(role, data),
             CommandNames.ResolveRunNode => HandleResolveRunNode(role, data),
+            CommandNames.ScanRunNode => HandleScanRunNode(role, data),
             _ => false,
         };
     }
@@ -43,6 +44,16 @@ public class CommonCommandHandler
         if (!Enum.TryParse<NodeResolution>(resolution, true, out _)) return false;
 
         _ctx.OnRunResolveRequested?.Invoke(nodeId, resolution);
+        return true;
+    }
+
+    private bool HandleScanRunNode(StationRole role, JsonElement data)
+    {
+        if (role != StationRole.CaptainNav) return false;
+        string nodeId = data.GetProperty("node_id").GetString() ?? "";
+        if (string.IsNullOrEmpty(nodeId)) return false;
+
+        _ctx.OnScanRunNodeRequested?.Invoke(nodeId);
         return true;
     }
 }

@@ -17,4 +17,6 @@ public class ContactsState
 
     public const int MaxProbeCharges = 5;
     public const float ProbeRechargeTime = 45f;
+    /// <summary>Seconds Probed ghost remains after live probe coverage ends (matches sensor probe duration).</summary>
+    public const float ProbeGhostMemorySeconds = 25f;
 }

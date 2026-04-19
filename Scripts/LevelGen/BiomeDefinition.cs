@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Godot;
 using SpacedOut.Sector;
+using SpacedOut.Sky;
 
 namespace SpacedOut.LevelGen;
 
@@ -11,6 +12,9 @@ public class BiomeDefinition
     public string Id { get; init; } = "";
     public string DisplayName { get; init; } = "";
     public float LevelRadius { get; init; } = 400f;
+
+    /// <summary>Palette and feature intensities for the procedural sector sky.</summary>
+    public SkyboxProfile SkyboxProfile { get; init; } = new();
 
     // Landmark tier
     public string[] LandmarkAssets { get; init; } = Array.Empty<string>();
@@ -58,19 +62,50 @@ public class BiomeDefinition
             DisplayName = "Asteroidenfeld",
             LevelRadius = 1200f,
 
+            SkyboxProfile = new SkyboxProfile
+            {
+                NebulaColorA = new Color(0.60f, 0.22f, 0.10f),   // rust
+                NebulaColorB = new Color(0.18f, 0.08f, 0.25f),   // deep violet
+                NebulaIntensity = 0.85f,
+                NebulaScale = 1.4f,
+                NebulaContrast = 2.3f,
+                StarDensity = 1.1f,
+                StarBrightness = 1.0f,
+                StarTwinkle = 0.12f,
+                GalaxyColor = new Color(0.85f, 0.70f, 0.55f),
+                GalaxyIntensity = 0f,
+                GalaxyWidth = 0.14f,
+                Suns = new[]
+                {
+                    new SunSpec { Color = new Color(1.0f, 0.82f, 0.55f), Size = 0.020f, Intensity = 1.0f },
+                },
+                PlanetCountMin = 1,
+                PlanetCountMax = 2,
+                PlanetPalettes = new[]
+                {
+                    new PlanetPalette
+                    {
+                        SurfaceA = new Color(0.72f, 0.45f, 0.22f),
+                        SurfaceB = new Color(0.32f, 0.18f, 0.10f),
+                        Atmosphere = new Color(1.0f, 0.55f, 0.30f),
+                        AtmosphereStrength = 0.45f,
+                    },
+                },
+            },
+
             LandmarkAssets = new[] { "asteroid_large" },
             LandmarkCount = 1,
 
             MidScaleAssets = new[] { "asteroid_medium" },
-            MidScaleMin = 40,
-            MidScaleMax = 65,
+            MidScaleMin = 70,
+            MidScaleMax = 110,
 
             SmallAssets = new[] { "asteroid_small" },
-            SmallMin = 90,
-            SmallMax = 160,
+            SmallMin = 220,
+            SmallMax = 340,
 
-            ScatterMin = 40,
-            ScatterMax = 80,
+            ScatterMin = 90,
+            ScatterMax = 160,
 
             // Asteroid-specific + cross-biome wildcard POIs (see PoiBlueprintCatalog for interaction logic).
             MarkerAssets = new[]
@@ -119,6 +154,41 @@ public class BiomeDefinition
             Id = "wreck_zone",
             DisplayName = "Wrackzone",
             LevelRadius = 1000f,
+
+            SkyboxProfile = new SkyboxProfile
+            {
+                NebulaColorA = new Color(0.20f, 0.55f, 0.35f),   // toxic green
+                NebulaColorB = new Color(0.50f, 0.18f, 0.60f),   // bruise purple
+                NebulaIntensity = 1.20f,
+                NebulaScale = 1.7f,
+                NebulaContrast = 2.6f,
+                StarDensity = 1.4f,
+                StarBrightness = 1.1f,
+                StarTwinkle = 0.18f,
+                GalaxyColor = new Color(0.55f, 0.85f, 0.75f),
+                GalaxyIntensity = 0f,
+                GalaxyWidth = 0.18f,
+                Suns = Array.Empty<SunSpec>(), // no visible sun in the haze
+                PlanetCountMin = 0,
+                PlanetCountMax = 2,
+                PlanetPalettes = new[]
+                {
+                    new PlanetPalette
+                    {
+                        SurfaceA = new Color(0.32f, 0.45f, 0.28f),
+                        SurfaceB = new Color(0.12f, 0.18f, 0.12f),
+                        Atmosphere = new Color(0.55f, 1.0f, 0.75f),
+                        AtmosphereStrength = 0.8f,
+                    },
+                    new PlanetPalette
+                    {
+                        SurfaceA = new Color(0.40f, 0.25f, 0.50f),
+                        SurfaceB = new Color(0.15f, 0.08f, 0.22f),
+                        Atmosphere = new Color(0.80f, 0.45f, 1.0f),
+                        AtmosphereStrength = 0.6f,
+                    },
+                },
+            },
 
             LandmarkAssets = new[] { "wreck_main" },
             LandmarkCount = 1,
@@ -180,6 +250,52 @@ public class BiomeDefinition
             Id = "station_periphery",
             DisplayName = "Stationsperipherie",
             LevelRadius = 950f,
+
+            SkyboxProfile = new SkyboxProfile
+            {
+                NebulaColorA = new Color(0.18f, 0.35f, 0.70f),   // cool blue
+                NebulaColorB = new Color(0.08f, 0.15f, 0.40f),   // deep midnight
+                NebulaIntensity = 0.65f,
+                NebulaScale = 1.8f,
+                NebulaContrast = 1.9f,
+                StarDensity = 1.0f,
+                StarBrightness = 1.1f,
+                StarTwinkle = 0.10f,
+                GalaxyColor = new Color(0.75f, 0.82f, 1.0f),
+                GalaxyIntensity = 0f,
+                GalaxyWidth = 0.22f,
+                Suns = new[]
+                {
+                    new SunSpec { Color = new Color(0.60f, 0.78f, 1.0f), Size = 0.012f, Intensity = 0.9f },
+                    new SunSpec { Color = new Color(1.0f, 0.95f, 0.85f), Size = 0.016f, Intensity = 0.7f },
+                },
+                PlanetCountMin = 1,
+                PlanetCountMax = 3,
+                PlanetPalettes = new[]
+                {
+                    new PlanetPalette
+                    {
+                        SurfaceA = new Color(0.50f, 0.72f, 0.95f),
+                        SurfaceB = new Color(0.12f, 0.28f, 0.55f),
+                        Atmosphere = new Color(0.55f, 0.80f, 1.0f),
+                        AtmosphereStrength = 0.85f,
+                    },
+                    new PlanetPalette
+                    {
+                        SurfaceA = new Color(0.85f, 0.78f, 0.62f),
+                        SurfaceB = new Color(0.40f, 0.32f, 0.22f),
+                        Atmosphere = new Color(0.95f, 0.85f, 0.55f),
+                        AtmosphereStrength = 0.35f,
+                    },
+                    new PlanetPalette
+                    {
+                        SurfaceA = new Color(0.80f, 0.55f, 0.40f),
+                        SurfaceB = new Color(0.30f, 0.18f, 0.12f),
+                        Atmosphere = new Color(1.0f, 0.65f, 0.45f),
+                        AtmosphereStrength = 0.55f,
+                    },
+                },
+            },
 
             LandmarkAssets = new[] { "station_core" },
             LandmarkCount = 1,

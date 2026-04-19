@@ -249,10 +249,11 @@ public static class AssetLibrary
             MinSpacing = 45f,
             AllowedBiomes = new[] { "asteroid_field" },
             DebugColor = new Color(0.85f, 0.55f, 0.15f),
-            MinScale = 0.9f,
-            MaxScale = 1.2f,
+            MinScale = 1.5f,
+            MaxScale = 2.5f,
             DefaultMapPresence = MapPresence.Point,
             MarkerVisual = MarkerVisualType.Glow,
+            ScenePaths = new[] { "res://Assets/models/pois/rich_vein_01/rich_vein_01.glb" },
         },
         new AssetDefinition
         {
@@ -270,6 +271,7 @@ public static class AssetLibrary
             MaxScale = 1.15f,
             DefaultMapPresence = MapPresence.Point,
             MarkerVisual = MarkerVisualType.Glow,
+            ScenePaths = new[] { "res://Assets/models/pois/crystal_geode_01/crystal_geode_01.glb" },
         },
         new AssetDefinition
         {
@@ -360,6 +362,23 @@ public static class AssetLibrary
         },
         new AssetDefinition
         {
+            Id = "station_dock",
+            DisplayName = "Station-Andockmast",
+            Category = AssetCategory.Beacon,
+            Tags = new[] { "marker", "dock", "station" },
+            Shape = PlaceholderShape.Cylinder,
+            Radius = 6f,
+            Weight = 1f,
+            MinSpacing = 20f,
+            AllowedBiomes = new[] { "station_periphery" },
+            DebugColor = new Color(0.30f, 0.80f, 1.00f),
+            MinScale = 1f,
+            MaxScale = 1f,
+            DefaultMapPresence = MapPresence.Point,
+            MarkerVisual = MarkerVisualType.Glow,
+        },
+        new AssetDefinition
+        {
             Id = "exit_marker",
             DisplayName = "Ausgang / Gate",
             Category = AssetCategory.ExitMarker,
@@ -372,6 +391,26 @@ public static class AssetLibrary
             DebugColor = new Color(0.15f, 0.95f, 0.30f),
             DefaultMapPresence = MapPresence.Point,
             MarkerVisual = MarkerVisualType.Glow,
+        },
+
+        // ── Mission-scoped primary-objective structures ──────────────
+        new AssetDefinition
+        {
+            Id = "station_relay",
+            DisplayName = "Navigationsrelais",
+            Category = AssetCategory.MissionStructure,
+            Tags = new[] { "structure", "mission", "primary_objective", "relay" },
+            Shape = PlaceholderShape.Cylinder,
+            Radius = 7f,
+            Weight = 1f,
+            MinSpacing = 40f,
+            AllowedBiomes = new[] { "asteroid_field", "wreck_zone", "station_periphery" },
+            DebugColor = new Color(0.35f, 0.75f, 0.90f),
+            MinScale = 1f,
+            MaxScale = 1f,
+            DefaultMapPresence = MapPresence.Point,
+            ScenePaths = System.Array.Empty<string>(),
+            MeshYawRandomize = true,
         },
     };
 

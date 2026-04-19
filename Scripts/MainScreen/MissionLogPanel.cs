@@ -1,4 +1,3 @@
-using System.Text;
 using Godot;
 using SpacedOut.State;
 using TC = SpacedOut.Shared.ThemeColors;
@@ -12,10 +11,23 @@ public class MissionLogPanel
     private readonly Control _parent;
     private ScrollContainer _scroll = null!;
     private RichTextLabel _rich = null!;
+    private Label _commsHighlight = null!;
+    private Label _decisionHighlight = null!;
     private int _lastCount = -1;
     private string _lastMissionId = "";
 
     public MissionLogPanel(Control parent) => _parent = parent;
+
+    private static Color SourceAccent(string? src) => src switch
+    {
+        "System" => TC.Yellow,
+        "CaptainNav" or "Captain" => TC.Purple,
+        "Navigation" or "Navigator" => TC.Cyan,
+        "Tactical" => TC.Orange,
+        "Engineer" => TC.Green,
+        "Gunner" => TC.Red,
+        _ => TC.DimWhite,
+    };
 
     public void Build()
     {
@@ -24,8 +36,8 @@ public class MissionLogPanel
         wrap.AnchorTop = 1;
         wrap.AnchorRight = 0;
         wrap.AnchorBottom = 1;
-        wrap.Position = new Vector2(20, -270);
-        wrap.Size = new Vector2(500, 185);
+        wrap.Position = new Vector2(20, -300);
+        wrap.Size = new Vector2(500, 220);
         wrap.Name = "MissionLogPanel";
         wrap.ClipContents = true;
         _parent.AddChild(wrap);
@@ -46,8 +58,20 @@ public class MissionLogPanel
             SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
             SizeFlagsVertical = Control.SizeFlags.ExpandFill,
         };
-        column.AddThemeConstantOverride("separation", 6);
+        column.AddThemeConstantOverride("separation", 4);
         inset.AddChild(column);
+
+        _commsHighlight = UI.CreateLabel("", 11, TC.Purple);
+        _commsHighlight.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        _commsHighlight.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+        _commsHighlight.Visible = false;
+        column.AddChild(_commsHighlight);
+
+        _decisionHighlight = UI.CreateLabel("", 11, TC.Cyan);
+        _decisionHighlight.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        _decisionHighlight.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+        _decisionHighlight.Visible = false;
+        column.AddChild(_decisionHighlight);
 
         var title = UI.CreateLabel("MISSIONSLOG", 12, TC.DimWhite);
         title.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
@@ -82,6 +106,13 @@ public class MissionLogPanel
             _lastCount = -1;
         }
 
+        var comms = state.Mission.LastCommsHighlight ?? "";
+        var dec = state.Mission.LastDecisionHighlight ?? "";
+        _commsHighlight.Visible = !string.IsNullOrEmpty(comms);
+        _commsHighlight.Text = _commsHighlight.Visible ? $"Letzte Funk: {comms}" : "";
+        _decisionHighlight.Visible = !string.IsNullOrEmpty(dec);
+        _decisionHighlight.Text = _decisionHighlight.Visible ? $"Letzte Entscheidung: {dec}" : "";
+
         var log = state.Mission.Log;
         if (log.Count == _lastCount)
             return;
@@ -89,28 +120,37 @@ public class MissionLogPanel
 
         const int maxLines = 48;
         var start = System.Math.Max(0, log.Count - maxLines);
-        var sb = new StringBuilder();
+
+        _rich.Clear();
+
+        if (log.Count == 0)
+        {
+            _rich.AppendText(state.MissionStarted ? "—" : "Warte auf Mission…");
+            _parent.GetTree().CreateTimer(0).Timeout += ScrollRichToEnd;
+            return;
+        }
+
         for (int i = start; i < log.Count; i++)
         {
             var e = log[i];
             int t = (int)e.Timestamp;
             int mm = t / 60;
             int ss = t % 60;
-            sb.Append('[');
-            sb.Append(mm.ToString("D2"));
-            sb.Append(':');
-            sb.Append(ss.ToString("D2"));
-            sb.Append("] ");
-            sb.Append(e.Source ?? "");
-            sb.Append(" · ");
-            sb.Append(e.Message ?? "");
-            sb.Append('\n');
+
+            _rich.PushColor(TC.DimWhite);
+            _rich.AppendText($"[{mm:D2}:{ss:D2}] ");
+            _rich.Pop();
+
+            _rich.PushColor(SourceAccent(e.Source));
+            _rich.AppendText(e.Source ?? "");
+            _rich.AppendText(" · ");
+            _rich.Pop();
+
+            _rich.PushColor(TC.White);
+            _rich.AppendText(e.Message ?? "");
+            _rich.Pop();
+            _rich.AppendText("\n");
         }
-
-        if (log.Count == 0)
-            sb.Append(state.MissionStarted ? "—" : "Warte auf Mission…");
-
-        _rich.Text = sb.ToString().TrimEnd();
 
         _parent.GetTree().CreateTimer(0).Timeout += ScrollRichToEnd;
     }

@@ -12,6 +12,10 @@ public static class AgentBehaviorSystem
 {
     private const float MapBoundary = 1000f;
     private const float DespawnMargin = 30f;
+    private const float AttackSeparationRadius = 70f;
+    private const float AttackSeparationRadiusSq = AttackSeparationRadius * AttackSeparationRadius;
+    private const float AttackSeparationWeight = 0.45f;
+    private const float AttackWobbleStrength = 0.22f;
 
     public static void Update(List<Contact> contacts, ShipState ship, float delta)
     {
@@ -22,7 +26,7 @@ public static class AgentBehaviorSystem
             agent.ModeTimer += delta;
 
             UpdateModeTransitions(contact, agent, ship);
-            UpdateMovement(contact, agent, ship, delta);
+            UpdateMovement(contact, agent, ship, delta, contacts);
         }
     }
 
@@ -97,7 +101,8 @@ public static class AgentBehaviorSystem
 
     // ── Movement per mode ────────────────────────────────────────────
 
-    private static void UpdateMovement(Contact contact, AgentState agent, ShipState ship, float delta)
+    private static void UpdateMovement(Contact contact, AgentState agent, ShipState ship, float delta,
+        List<Contact> contacts)
     {
         switch (agent.Mode)
         {
@@ -117,7 +122,7 @@ public static class AgentBehaviorSystem
                 UpdateIntercept(contact, agent, ship, delta);
                 break;
             case AgentBehaviorMode.Attack:
-                UpdateAttack(contact, agent, ship, delta);
+                UpdateAttack(contact, agent, ship, delta, contacts);
                 break;
             case AgentBehaviorMode.Flee:
                 UpdateFlee(contact, agent, ship);
@@ -216,7 +221,8 @@ public static class AgentBehaviorSystem
         contact.VelocityY = dy / dist * agent.BaseSpeed;
     }
 
-    private static void UpdateAttack(Contact contact, AgentState agent, ShipState ship, float delta)
+    private static void UpdateAttack(Contact contact, AgentState agent, ShipState ship, float delta,
+        List<Contact> contacts)
     {
         if (!AgentDefinition.TryGet(agent.AgentType, out var def)) return;
 
@@ -231,20 +237,48 @@ public static class AgentBehaviorSystem
         float perpX = -ny * agent.OrbitDirection;
         float perpY = nx * agent.OrbitDirection;
 
-        float idealDist = def.AttackRange * 0.7f;
+        float idealDist = def.AttackRange * 0.7f * agent.AttackIdealDistFactor;
         float approachStrength = (dist - idealDist) * 0.02f;
         approachStrength = Math.Clamp(approachStrength, -0.5f, 0.5f);
 
-        float vx = perpX + nx * approachStrength;
-        float vy = perpY + ny * approachStrength;
+        float orbitVx = perpX + nx * approachStrength;
+        float orbitVy = perpY + ny * approachStrength;
+
+        float wobble = MathF.Sin(agent.ModeTimer * 0.4f + agent.PhaseOffset) * AttackWobbleStrength;
+        float wobbleX = perpX * wobble;
+        float wobbleY = perpY * wobble;
+
+        float sepX = 0f;
+        float sepY = 0f;
+        AccumulateAttackSeparation(contact, contacts, ref sepX, ref sepY);
+
+        float vx = orbitVx + wobbleX + sepX * AttackSeparationWeight;
+        float vy = orbitVy + wobbleY + sepY * AttackSeparationWeight;
         float len = MathF.Sqrt(vx * vx + vy * vy);
         if (len > 0.01f)
         {
             contact.VelocityX = vx / len * agent.BaseSpeed;
             contact.VelocityY = vy / len * agent.BaseSpeed;
         }
+    }
 
-        agent.OrbitAngle += delta;
+    private static void AccumulateAttackSeparation(Contact self, List<Contact> contacts, ref float ax, ref float ay)
+    {
+        for (int i = 0; i < contacts.Count; i++)
+        {
+            var other = contacts[i];
+            if (ReferenceEquals(other, self) || other.Agent == null || other.IsDestroyed) continue;
+
+            float dx = self.PositionX - other.PositionX;
+            float dy = self.PositionY - other.PositionY;
+            float d2 = dx * dx + dy * dy;
+            if (d2 < 1e-4f || d2 > AttackSeparationRadiusSq) continue;
+
+            float d = MathF.Sqrt(d2);
+            float w = (AttackSeparationRadius - d) / AttackSeparationRadius;
+            ax += dx / d * w;
+            ay += dy / d * w;
+        }
     }
 
     private static void UpdateFlee(Contact contact, AgentState agent, ShipState ship)

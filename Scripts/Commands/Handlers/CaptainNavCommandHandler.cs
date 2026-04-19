@@ -1,5 +1,6 @@
 using System;
 using System.Text.Json;
+using SpacedOut.Mission;
 using SpacedOut.Run;
 using SpacedOut.State;
 
@@ -33,6 +34,8 @@ public class CaptainNavCommandHandler
             CommandNames.HighlightRoute => HandleHighlightRoute(data),
             CommandNames.ToggleStarMapOnMainScreen => HandleToggleStarMap(),
             CommandNames.SetCourseToContact => HandleSetCourseToContact(data),
+            CommandNames.SetTargetTracking => HandleSetTargetTracking(data),
+            CommandNames.LeaveSector => HandleLeaveSector(),
 
             _ => false,
         };
@@ -84,10 +87,45 @@ public class CaptainNavCommandHandler
         _ctx.State.Mission.CompletedDecisions.Add(decisionId);
 
         var option = decision.Options.Find(o => o.Id == optionId);
-        _ctx.AddLog("CaptainNav", $"Entscheidung: {decision.Title} → {option?.Label ?? optionId}");
+
+        bool isPreSector = _ctx.State.Mission.PreSectorEventActive
+            && decisionId == PreSectorDecisionId(_ctx.State.Mission.PendingPreSectorEventId);
+        string preSectorNodeId = _ctx.State.Mission.PendingPreSectorNodeId;
+        string preSectorEventId = _ctx.State.Mission.PendingPreSectorEventId;
+
+        DecisionEffectResolver.Apply(
+            option?.Effects,
+            _ctx.State,
+            _ctx.State.ActiveRunState,
+            _ctx.MissionController,
+            addLog: (src, msg) => _ctx.AddLog(src, msg),
+            sourceLabel: "Event",
+            orchestrator: _ctx.Orchestrator);
+
+        string narrative = !string.IsNullOrWhiteSpace(option?.ResolutionNarrative)
+            ? option!.ResolutionNarrative.Trim()
+            : $"Die Brücke setzt „{option?.Label ?? optionId}“ für „{decision.Title}“ um.";
+        string effectsLine = DecisionEffectsSummary.FormatGerman(option?.Effects);
+        _ctx.NotifyDecisionResolved(narrative, effectsLine, decision.Title, option?.Label, cinematicResolution: isPreSector);
+
+        _ctx.State.Mission.LastDecisionHighlight = $"{decision.Title} → {option?.Label ?? optionId}";
+
+        if (isPreSector)
+        {
+            bool skip = option?.Effects?.SkipSector ?? false;
+            _ctx.State.Mission.PreSectorEventActive = false;
+            _ctx.State.Mission.PendingPreSectorEventId = "";
+            _ctx.State.Mission.PendingPreSectorEventTitle = "";
+            _ctx.State.Mission.PendingPreSectorNodeId = "";
+            _ctx.OnPreSectorDecisionResolved?.Invoke(preSectorNodeId, preSectorEventId, skip);
+        }
+
         _ctx.EmitStateChanged();
         return true;
     }
+
+    /// <summary>Convention: pre-sector decisions are keyed <c>presector:&lt;eventId&gt;</c> so the handler can route them to <see cref="Orchestration.MissionOrchestrator.ResolvePreSectorDecision"/>.</summary>
+    public static string PreSectorDecisionId(string eventId) => $"presector:{eventId}";
 
     private bool HandleRequestStatus(StationRole fromRole, JsonElement data)
     {
@@ -107,10 +145,21 @@ public class CaptainNavCommandHandler
         return true;
     }
 
+    private bool HandleLeaveSector()
+    {
+        if (_ctx.MissionController == null) return false;
+        if (!_ctx.MissionController.TryCaptainLeaveSector()) return false;
+        _ctx.AddLog("CaptainNav", "Sektor verlassen — Sprung eingeleitet.");
+        _ctx.EmitStateChanged();
+        return true;
+    }
+
     // ── Navigator ──
 
     private bool HandleSetWaypoint(JsonElement data)
     {
+        _ctx.State.Navigation.TargetTracking.Clear();
+
         float x = data.GetProperty("x").GetSingle();
         float y = data.GetProperty("y").GetSingle();
         float z = data.TryGetProperty("z", out var zVal) ? zVal.GetSingle() : _ctx.State.Ship.PositionZ;
@@ -195,6 +244,8 @@ public class CaptainNavCommandHandler
         var contact = _ctx.State.Contacts.Find(c => c.Id == contactId);
         if (contact == null) return false;
 
+        _ctx.State.Navigation.TargetTracking.Clear();
+
         float targetX, targetY, targetZ;
         if (mode == "flee")
         {
@@ -224,6 +275,66 @@ public class CaptainNavCommandHandler
         _ctx.AddLog("CaptainNav", mode == "flee"
             ? $"Fluchtvektor von {contact.DisplayName}"
             : $"Angriffsvektor auf {contact.DisplayName}");
+        RecalculateRoute();
+        _ctx.EmitStateChanged();
+        return true;
+    }
+
+    private bool HandleSetTargetTracking(JsonElement data)
+    {
+        string modeStr = data.GetProperty("mode").GetString() ?? "None";
+        if (!Enum.TryParse<TargetTrackingMode>(modeStr, true, out var mode))
+            return false;
+
+        var tt = _ctx.State.Navigation.TargetTracking;
+        var ship = _ctx.State.Ship;
+
+        if (mode == TargetTrackingMode.None)
+        {
+            tt.Clear();
+            _ctx.AddLog("CaptainNav", "Zielverfolgung beendet");
+            RecalculateRoute();
+            _ctx.EmitStateChanged();
+            return true;
+        }
+
+        string contactId = data.GetProperty("contact_id").GetString() ?? "";
+        var contact = _ctx.State.Contacts.Find(c => c.Id == contactId);
+        if (contact == null || contact.IsDestroyed || contact.Discovery != DiscoveryState.Scanned
+            || !_ctx.State.IsContactAvailableToCaptainNav(contact))
+            return false;
+
+        float range = tt.Range;
+        if (data.TryGetProperty("range", out var rEl))
+            range = rEl.GetSingle();
+        range = Math.Clamp(range, TargetTrackingState.MinRange, TargetTrackingState.MaxRange);
+
+        bool cw = tt.OrbitClockwise;
+        if (data.TryGetProperty("orbit_clockwise", out var cwEl))
+            cw = cwEl.GetBoolean();
+
+        bool sameOrbit = tt.Mode == TargetTrackingMode.Orbit
+            && tt.TrackedContactId == contactId
+            && mode == TargetTrackingMode.Orbit;
+
+        tt.Mode = mode;
+        tt.TrackedContactId = contactId;
+        tt.Range = range;
+        tt.OrbitClockwise = cw;
+
+        if (mode == TargetTrackingMode.Orbit && !sameOrbit)
+            tt.OrbitAngle = MathF.Atan2(ship.PositionY - contact.PositionY, ship.PositionX - contact.PositionX);
+
+        _ctx.State.Route.Waypoints.RemoveAll(w => !w.IsReached);
+
+        string logMsg = mode switch
+        {
+            TargetTrackingMode.Follow => $"Zielverfolgung: Folgen — {contact.DisplayName}",
+            TargetTrackingMode.Orbit => $"Zielverfolgung: Orbit {range:F0} m — {contact.DisplayName}",
+            TargetTrackingMode.KeepAtRange => $"Zielverfolgung: Abstand {range:F0} m — {contact.DisplayName}",
+            _ => "Zielverfolgung"
+        };
+        _ctx.AddLog("CaptainNav", logMsg);
         RecalculateRoute();
         _ctx.EmitStateChanged();
         return true;

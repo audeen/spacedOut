@@ -27,6 +27,13 @@
     </div>
 
     <div class="content">
+        <div id="event-indicator" class="event-indicator" style="display:none;"></div>
+        <!-- Dock Status (Station sectors) -->
+        <div class="panel" id="dock-status-panel" style="display:none; border-left:3px solid var(--cyan);">
+            <div class="panel-title">Andock-Status</div>
+            <div id="dock-status-text" class="text-cyan" style="font-size:13px;">—</div>
+        </div>
+
         <!-- Sensor Status -->
         <div class="panel">
             <div class="panel-title">Sensorstatus</div>
@@ -84,6 +91,8 @@
             </div>
             <div class="text-dim mt-4" style="font-size:11px; padding:0 6px;">
                 Tippen = Kontakt wählen · Ziehen = Karte bewegen · Sonden-Modus: Tippen = Sonde senden
+                <span id="tactical-jam-legend" style="display:none;color:rgba(255,140,100,0.9);">
+                    · Oranger Bereich: durch Störung eingebüßte Reichweite</span>
             </div>
         </div>
 

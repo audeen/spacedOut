@@ -26,7 +26,6 @@ public class EngineerCommandHandler
             CommandNames.RaiseSystemWarning => HandleRaiseWarning(role, data),
             CommandNames.CoolantPulse => HandleCoolantPulse(data),
             CommandNames.OverchargeSystem => HandleOvercharge(data),
-            CommandNames.ConvertSparesToAmmo => HandleConvertSparesToAmmo(),
             CommandNames.ActivateTractor => HandleActivateTractor(data),
             CommandNames.ExtractResource => HandleExtractResource(data),
             _ => false,
@@ -133,11 +132,6 @@ public class EngineerCommandHandler
         return true;
     }
 
-    private bool HandleConvertSparesToAmmo()
-    {
-        return false;
-    }
-
     private bool HandleActivateTractor(JsonElement data)
     {
         return StartPoiExtraction(data, tractor: true);
@@ -167,7 +161,8 @@ public class EngineerCommandHandler
         float dx = contact.PositionX - _ctx.State.Ship.PositionX;
         float dy = contact.PositionY - _ctx.State.Ship.PositionY;
         float dist = MathF.Sqrt(dx * dx + dy * dy);
-        if (dist > bp.ExtractRange) return false;
+        // Align with MissionController.TickPoiExtraction outer bound (ExtractRange * 1.3f).
+        if (dist > bp.ExtractRange * 1.2f) return false;
 
         StopAnyExtraction();
 
